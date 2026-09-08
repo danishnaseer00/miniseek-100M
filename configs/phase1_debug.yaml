@@ -1,0 +1,40 @@
+model:
+  name: "miniseek-phase1"
+  dim: 256
+  n_layers: 6
+  n_heads: 8
+  mlp_hidden_dim: 704
+  max_seq_len: 1024
+  dropout: 0.1
+  tie_embeddings: true
+
+training:
+  batch_size: 16
+  num_epochs: 5
+  learning_rate: 6e-4
+  min_lr: 6e-5
+  weight_decay: 0.01
+  grad_clip: 1.0
+  warmup_steps: 100
+  
+  mixed_precision: true
+  num_workers: 4
+  
+  save_every: 1
+  checkpoint_dir: "./checkpoints/phase1"
+  log_dir: "./logs/phase1"
+
+data:
+  dataset: "wikitext-103"
+  tokenizer: "gpt2"
+  cache_dir: "./data"
+  max_seq_len: 1024
+  
+wandb:
+  use_wandb: false
+  wandb_project: "miniseek-phase1"
+  wandb_entity: null
+
+device: "cuda"
+
+expected_params_million: 21
