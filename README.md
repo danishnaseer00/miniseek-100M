@@ -1,14 +1,22 @@
-<p align="center">
+<div align="center">
 
 # Miniseek
 
-**A from-scratch decoder-only transformer measurement lab**
+**Dense baselines, scaled honestly — 17.7M → 101.4M parameters at a fixed token budget.**
 
-Scale-up study: fix the token budget, grow the model, and watch validation loss fall.
+Built entirely from scratch in PyTorch as a measurement lab: every future
+architectural change (MLA, MoE, MTP) competes against identical dense controls
+on the same data, same budget, same eval.
 
-`v0.1` · `dense baseline` · `101.4M control` · `WikiText-103` · `PyTorch` · `Modal A10G`
+`v0.1` · baseline **17.7M** → control **101.4M** · WikiText-103 · Modal A10G
 
-</p>
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.6-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)
+![101.4M params](https://img.shields.io/badge/params-101.4M-F4A261?style=flat-square)
+![WikiText-103](https://img.shields.io/badge/data-WikiText--103-7B8794?style=flat-square)
+![release v0.1](https://img.shields.io/badge/release-v0.1-264653?style=flat-square)
+
+</div>
 
 ---
 
