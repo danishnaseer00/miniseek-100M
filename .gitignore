@@ -1,2 +1,12 @@
-
 docs
+
+# Heavy / regenerable artifacts (kept out of git; wipe from history was done
+# when checkpoints + the HF dataset cache were accidentally tracked)
+checkpoints/
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pt
+*.npz
