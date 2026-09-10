@@ -1,0 +1,9 @@
+data/
+checkpoints/
+logs/
+outputs/
+.venv/
+.git/
+__pycache__/
+*.pt
+*.npz

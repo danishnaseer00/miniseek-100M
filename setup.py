@@ -15,7 +15,6 @@ setup(
         "wandb>=0.15.0",
         "tqdm>=4.65.0",
         "pyyaml>=6.0",
-        "einops>=0.6.0",
     ],
     python_requires=">=3.9",
 )

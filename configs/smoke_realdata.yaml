@@ -1,0 +1,40 @@
+model:
+  name: "miniseek-smoke"
+  dim: 64
+  n_layers: 2
+  n_heads: 4
+  mlp_hidden_dim: 128
+  max_seq_len: 128
+  dropout: 0.0
+  tie_embeddings: true
+
+training:
+  batch_size: 4
+  num_epochs: 1
+  learning_rate: 6e-4
+  min_lr: 6e-5
+  weight_decay: 0.01
+  grad_clip: 1.0
+  warmup_steps: 10
+
+  mixed_precision: false
+  num_workers: 0
+
+  max_docs: 200
+
+  save_every: 1
+  checkpoint_dir: "./checkpoints/smoke"
+  log_dir: "./logs/smoke"
+
+data:
+  dataset: "wikitext-103"
+  tokenizer: "gpt2"
+  cache_dir: "./data"
+  max_seq_len: 128
+
+wandb:
+  use_wandb: false
+  wandb_project: "miniseek-smoke"
+  wandb_entity: null
+
+device: "auto"

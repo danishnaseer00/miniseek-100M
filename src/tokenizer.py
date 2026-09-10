@@ -5,6 +5,7 @@ import os
 
 class Tokenizer:
     def __init__(self, tokenizer_name: str = "gpt2", max_length: int = 2048):
+        self.name = tokenizer_name
         self.tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_name)
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.max_length = max_length

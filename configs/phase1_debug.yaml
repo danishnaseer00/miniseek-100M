@@ -35,6 +35,6 @@ wandb:
   wandb_project: "miniseek-phase1"
   wandb_entity: null
 
-device: "cuda"
+device: "auto"
 
 expected_params_million: 21

@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Optional
-from .layers import apply_rotary_pos_emb
+from .rope import apply_rotary_pos_emb
 
 
 class CausalSelfAttention(nn.Module):

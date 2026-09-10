@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 from typing import Optional
-from .layers import RMSNorm, SwiGLU, RotaryPositionalEmbedding
+from .norm_activation import RMSNorm, SwiGLU
+from .rope import RotaryPositionalEmbedding
 from .attention import CausalSelfAttention
 
 
