@@ -41,7 +41,7 @@ image = (
     .add_local_dir(
         REPO,
         "/root/miniseek",
-        ignore=lambda p: any(part in ("data", ".git", "checkpoints", "logs", ".venv", "outputs") for part in p.parts),
+        ignore=lambda p: any(part in ("data", ".git", "checkpoints", "logs", ".venv", "outputs", "scratch") for part in p.parts),
     )
 )
 
@@ -148,9 +148,10 @@ def train(config_name: str = "phase1_debug.yaml", resume: Optional[str] = None):
     print("Training complete. Checkpoints committed to volume.")
 
 
-@app.function(timeout=1800, memory=8192, cpu=2.0)
+@app.function(timeout=1800, memory=8192, gpu="A10G")
 def generate(
     prompts: str = "[]",
+    prompts_file: Optional[str] = None,
     max_new_tokens: int = 80,
     temperature: float = 0.8,
     top_k: int = 40,
@@ -172,12 +173,16 @@ def generate(
         "The chemical formula for water is H",
         "2 + 2 is equal to",
     ]
-    probe_prompts = json.loads(prompts) or default_prompts
+    if prompts_file:
+        with open(os.path.join(REPO_REMOTE, prompts_file), "r", encoding="utf-8") as f:
+            probe_prompts = [line.strip() for line in f if line.strip()]
+    else:
+        probe_prompts = json.loads(prompts) or default_prompts
 
     run_dir = CKPT_DIR if run_name is None else _run_dir(run_name)
     ckpt_path = f"{run_dir}/best_model.pt"
     tokenizer = Tokenizer("gpt2", max_length=1024)
-    model, config = load_model_from_checkpoint(ckpt_path, device="cpu", vocab_size=tokenizer.vocab_size)
+    model, config = load_model_from_checkpoint(ckpt_path, device="cuda", vocab_size=tokenizer.vocab_size)
 
     train_flat = None
     if memorization_check:
@@ -199,7 +204,7 @@ def generate(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_k=top_k,
-            device="cpu",
+            device="cuda",
         )
         print(f"\nPROMPT: {prompt}\n{full}\n{'-'*80}")
 

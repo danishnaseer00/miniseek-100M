@@ -1,118 +1,170 @@
+<p align="center">
+
 # Miniseek
 
-Incremental LLM research project — a dense decoder-only transformer built from
-scratch (GPT-2 / LLaMA-style), evaluated on WikiText-103. The goal is a
-measurement-lab: each architectural change (MLA, MoE, MTP, ...) gets compared
-against dense controls at the same token budget.
+**A from-scratch decoder-only transformer measurement lab**
 
-**Current status: Phase 1 (dense baseline) complete.**
+Scale-up study: fix the token budget, grow the model, and watch validation loss fall.
 
-| Metric                        | Value                                          |
-|-------------------------------|------------------------------------------------|
-| Parameters                    | **17,686,016** (17.69M)                        |
-| Training tokens (corpus)      | **117,919,088** (WikiText-103 train split)     |
-| Tokens processed (5 epochs)   | **589,660,160** (~590M)                        |
-| Final train loss              | 3.6944                                         |
-| Final validation loss         | 3.6582                                         |
-| Final validation perplexity   | **38.79**                                      |
+`v0.1` · `dense baseline` · `101.4M control` · `WikiText-103` · `PyTorch` · `Modal A10G`
 
-![Phase 1 loss curve](figures/loss_curve.png)
+</p>
 
-Validation loss falls steadily from 3.97 (epoch 1) to 3.66 (epoch 5). The model
-is *capacity-limited, not data-limited*: Chinchilla-optimal training for 17.7M
-params is ~354M tokens, so the corpus alone is enough — the 100M-parameter
-Phase 2 control is what moves loss below ~3.0.
+---
+
+## tl;dr
+
+- **Phase 1** — dense baseline, 17.7M params, 5 epochs (~590M tokens).
+- **Phase 2** — dense control, 101.4M params, same ~590M tokens.
+- Scaling the model **5.7×** at a **fixed token budget** lowers validation loss
+  **3.658 → 3.169** and perplexity **38.8 → 23.8** (see figure below).
+
+| Metric | Phase 1 (17.7M) | Phase 2 (101.4M) |
+|--------|----------------:|-----------------:|
+| Parameters | 17,686,016 | 101,360,512 |
+| Tokens per epoch | 117,919,088 | 117,919,088 |
+| Epochs | 5 | 5 |
+| Effective batch | 16 × 1024 tok | 8 × grad-accum 4 → 32 |
+| Final train loss | 3.6944 | 2.9586 |
+| Final val loss | 3.6582 | **3.1694** |
+| Final val perplexity | 38.79 | **23.79** |
+| GPU cost | ~$6.00 | **$17.02** (≤ $24 cap) |
+
+![Training curves](figures/loss.png)
+
+Regenerate with `python scripts/loss.py` (writes `figures/loss.png`).
+*Heads-up: Phase-1 train-loss for epochs 1–4 in the figure is an estimate —
+only the epoch-5 value (3.6944) was logged. All val-loss curves are exact.*
+
+---
+
+## What the model learned — and what it didn't (and why)
+
+Full samples live in [`response_lm.txt`](response_lm.txt). Key observations from
+both checkpoints:
+
+### ✅ What it learned
+
+- **English syntax.** Sentences are grammatical, punctuated, and spelled
+  correctly — it clearly captured word order, morphology, and agreement rules.
+- **WikiText's genre.** The model reproduces encyclopedic prose structure,
+  including `==== Heading ====` and `= = Reception = =` section-markup patterns.
+- **Not memorization.** A training-data overlap probe (anchor-token matching
+  against the 118M-token train split) finds **0–1 token** exact matches — the
+  output is *generated*, never regurgitated.
+- **Healthy train/val gap at 101.4M.** Train 2.96 vs val 3.17 means it is
+  learning generalizable structure (Perplexity-Intuition: gap << 1).
+
+### ❌ What it did not learn
+
+- **No factual retrieval** — knowledge probing (temperature 0.1, top-k 5):
+  - *"The capital of France is"* → "the capital of the Kingdom of France"
+  - *"The Earth revolves around"* → "the city of the city"
+  - *"World War II began in"* → "the late 1950s"
+  - *"Water … boils at"* → "0 degrees altitude"
+  - Score: **0/10**.
+- **No arithmetic.** *"2 + 2 is equal to"* → "the 0.5c4 + 2 −".
+- **No long-range coherence.** Topics drift without warning (Roman Empire →
+  a 1980s pop song). This is a language model, not a reasoner.
+
+### 🔍 Why
+
+1. **Data distribution.** WikiText-103 is encyclopedic *prose*, never written as
+   Q&A. The phrase *"The capital of France is"* effectively never appears in
+   training, so retrieval can't be learned. A GPT-2-sized model only recalls
+   facts when the fact **shape** (question → answer) is in the data.
+2. **Not enough tokens.** GPT-2 (117M, ≈ our size) needed **~10B tokens** of
+   diverse web text before factual recall appeared. 590M tokens of *one* corpus
+   is roughly 1/17 of that — *capacity-limited and data-limited at once.*
+3. **Wrong objective.** Next-token prediction optimizes *plausible text*, not
+   *correct answers*. Decoding settings (temperature/top-k) tune style, not
+   knowledge — they never add facts.
+4. **Baseline literacy gap.** 23.8 validation perplexity is still high; a fluent
+   LM needs ppl ≲ 15. Facts only emerge as perplexity falls toward that range.
+
+### 🚀 What would fix it (next steps)
+
+- **More data, diverse** — multi-domain web + books (a 1B-token pipeline),
+  not repeated WikiText epochs (repeats stop buying generalization).
+- **Higher scale** — the phase-2 curve was still descending at epoch 5; a
+  101M model on 2B+ tokens is the direct follow-up.
+- **Eval you actually want** — QA/summarization evals, not story prompts, when
+  the training distribution is encyclopedic.
+
+---
 
 ## Model architecture
 
 Decoder-only stack: pre-norm attention + SwiGLU feed-forward, RoPE positional
 encoding, RMSNorm, tied input/output embeddings, GPT-2 BPE vocabulary (50,257).
 
-| Component        | Value                                        |
-|------------------|----------------------------------------------|
-| Embedding dim    | 256                                          |
-| Layers           | 6                                            |
-| Attention heads  | 8 × head_dim 32                              |
-| FFN hidden       | 704 (SwiGLU)                                 |
-| Max sequence len | 1024                                         |
-| Norm             | RMSNorm (eps 1e-6)                           |
-| Positional       | RoPE (base 10_000)                           |
-| Dropout          | 0.1                                          |
-| Tied embeddings  | yes                                          |
+| Component | Phase 1 (17.7M) | Phase 2 (101.4M) |
+|-----------|-----------------|------------------|
+| Embedding dim | 256 | 704 |
+| Layers | 6 | 12 |
+| Attention heads | 8 × head 32 | 8 × head 88 |
+| FFN hidden (SwiGLU) | 704 | 1664 |
+| Max sequence len | 1024 | 1024 |
+| Norm | RMSNorm (eps 1e-6) | RMSNorm (eps 1e-6) |
+| Positional | RoPE (base 10 000) | RoPE (base 10 000) |
+| Dropout | 0.1 | 0.1 |
+| Tied embeddings | yes | yes |
 
-**Parameter breakdown (17,686,016 total):**
-
-| Block                                   | Params  | Share |
-|-----------------------------------------|---------|-------|
-| Embedding / LM head (tied, 50257×256)   | 12,865,792 | 72.7% |
-| Per-layer attention (QKV+O, 256×256×4)  | 262,144  | —     |
-| Per-layer SwiGLU (gate/up 256→704, down 704→256) | 540,672 | — |
-| Per-layer RMSNorm (2×256)               | 512      | —     |
-| 6 layers total                          | 4,819,968 | 27.3% |
-| Final RMSNorm                          | 256      | —     |
-
-The vocab dominates: 73% of parameters are the shared input/output embedding
-table. Configs declare `expected_params_million` and the loader raises if the
-built model disagrees (currently 17.69).
+The vocabulary dominates parameter count: in Phase 1, the shared
+embedding/LM-head table (50 257 × 256) is 72.7% of all parameters. Configs
+declare `expected_params_million` and the loader raises if the built model
+disagrees (17.69 / 101.36).
 
 ## Dataset & token accounting
 
-- **Dataset:** WikiText-103 (raw split), tokenized with GPT-2 BPE
-  (`wikitext-103-raw-v1`). No filtering or deduplication.
-- **Train split:** 1,165,029 documents → 117,919,088 tokens.
-- **Windows:** 1024 tokens per sequence → 115,155 sequences; batch size 16 →
-  7,198 gradient steps per epoch.
-- **Tokens per epoch:** 7,198 × 16 × 1024 = **117,932,032** (~117.9M).
-- **Total processed:** × 5 epochs = **589,660,160** tokens (~590M).
+- **Dataset:** WikiText-103 (raw split), GPT-2 BPE, no filtering/deduplication.
+- **Train split:** 1,165,029 documents → 117,919,088 tokens → 115,155 windows.
+- **Phase 1:** batch 16 → 7,198 gradient steps/epoch → 590M tokens total.
+- **Phase 2:** batch 8 × `grad_accum_steps 4` = **effective batch 32** (verified
+  byte-for-byte equivalent to a real batch-32 step) → 3,599 optimizer steps/epoch.
 
 ## Training details
 
-- **Hardware:** single NVIDIA A10G via Modal (~36 min/epoch).
-- **Optimizer:** AdamW (β=0.9/0.95, weight decay 0.01), LR 6e-4 → 6e-5 cosine
-  decay with 100-step warmup, gradient clipping at 1.0, AMP autocast.
-- **Logging:** per-epoch JSONL to `logs/<run>/training_log.jsonl`; checkpoints
-  (per-epoch + `best_model.pt`) and cached `.npz` datasets on the Modal volume.
+- **Hardware:** single NVIDIA A10G via Modal (~36 min/epoch @ 17.7M,
+  ~1.6 h/epoch @ 101.4M).
+- **Optimizer:** AdamW (β 0.9/0.95, wd 0.01), LR 6e-4 → 6e-5 cosine, warmup
+  100 steps (Phase 1) / 200 steps (Phase 2), grad clip 1.0, AMP autocast.
+- **Logging:** per-epoch JSONL to `logs/<run>/training_log.jsonl`; per-epoch +
+  `best_model.pt` + `latest.pt` checkpoints on the `miniseek-data` volume.
 
-| Epoch | Steps  | Val Loss | Val PPL |
-|-------|--------|----------|---------|
-| 1     | 7,198  | 3.9735   | 53.17   |
-| 2     | 14,396 | 3.8260   | 45.88   |
-| 3     | 21,594 | 3.7438   | 42.26   |
-| 4     | 28,792 | 3.6793   | 39.62   |
-| 5     | 35,990 | 3.6582   | 38.79   |
+### Budget-aware training (Phase 2, cap = $24)
 
-## Qualitative check
-
-Generated samples for 9 prompts live in
-[`response_lm.txt`](response_lm.txt). Output is fluent at the surface level
-but semantically incoherent — expected at perplexity ~39. A memorization probe
-(anchor-token matching against the 117.9M-token train split) found the longest
-verbatim span to be **0–1 tokens**: the model generates fresh text and does not
-regurgitate training data.
+- Cost cap tracked in a persistent ledger (`<log_dir>/cost_ledger.json`),
+  cumulative across every run and resume. Phase 2 spent **$17.02**.
+- Stops cleanly before/within an epoch that would exceed the cap after
+  projecting GPU time × `usd_per_hour: 2.0` (measured $6/3h on A10G in Phase 1).
+- Saves full state (model + optimizer + scheduler + scaler + RNG + step) to
+  `latest.pt` — resumable across Modal accounts:
+  `modal run scripts/modal_train.py --config-name phase2_100m.yaml --resume latest.pt`.
 
 ## Project structure
 
 ```
 miniseek/
-├─ configs/                 # YAML run configs (phase1_debug, smoke_realdata)
-├─ figures/                 # Loss-curve figures (from scripts/plot_loss_curve.py)
+├─ configs/                  # phase1_debug, phase2_100m, smoke_realdata
+├─ figures/                  # loss.png (from scripts/loss.py)
 ├─ scripts/
-│  ├─ train.py              # Local CPU training entrypoint
-│  ├─ modal_train.py        # Modal app (download, train, generate, ckpt_history)
-│  └─ plot_loss_curve.py    # Plots training_log.jsonl (or the committed baseline)
+│  ├─ train.py               # Local CPU training entrypoint (smoke tests)
+│  ├─ modal_train.py         # Modal app (download, train, generate, ckpt_history)
+│  └─ loss.py                # Phase 1 vs Phase 2 comparison figure
 ├─ src/
-│  ├─ model.py              # Decoder transformer (config-driven)
-│  ├─ attention.py          # Causal MHA
-│  ├─ rope.py               # Rotary position embeddings
-│  ├─ norm_activation.py    # RMSNorm, SwiGLU
-│  ├─ tokenizer.py          # GPT-2 BPE wrapper
-│  ├─ data.py               # WikiText-103 dataloader / .npz cache
-│  ├─ train.py              # Training loop + JSONL logging
-│  └─ generate.py           # Sampling
-├─ tests/                   # Unit tests (params, forward, shapes)
-├─ logs/                    # Training JSONL logs
-├─ checkpoints/             # Saved models
-└─ data/                    # Local dataset cache
+│  ├─ model.py               # Decoder transformer (config-driven)
+│  ├─ attention.py           # Causal multi-head attention
+│  ├─ rope.py                # Rotary position embeddings
+│  ├─ norm_activation.py     # RMSNorm, SwiGLU
+│  ├─ tokenizer.py           # GPT-2 BPE wrapper
+│  ├─ data.py                # WikiText-103 dataloader / .npz cache
+│  ├─ train.py               # Training loop + JSONL logging + budget ledger
+│  └─ generate.py            # Sampling
+├─ tests/                    # Unit tests (params, forward, shapes)
+├─ probes.txt                # Knowledge-probe prompts (used by generate)
+├─ response_lm.txt           # Human-readable model samples (Phase 1 + 2)
+└─ data/ logs/ checkpoints/  # Local caches (git-ignored)
 ```
 
 ## Quick start
@@ -123,81 +175,33 @@ pip install -r requirements.txt
 # Unit tests
 python tests/test_model.py
 
-# Local CPU smoke run (logs to logs/smoke/)
+# Local CPU smoke run
 python scripts/train.py --config configs/smoke_realdata.yaml
 
-# Plot a loss curve from a JSONL log (defaults to the phase-1 baseline)
-python scripts/plot_loss_curve.py            # baseline
-python scripts/plot_loss_curve.py logs/smoke/training_log.jsonl
+# Regenerate the comparison figure
+python scripts/loss.py
+
+# Sample from the Phase-2 checkpoint
+modal run scripts/modal_train.py::generate \
+  --prompts-file probes.txt --temperature 0.1 --top-k 5 --no-memorization-check
 ```
 
-GPU training runs through Modal:
-
-```bash
-modal run scripts/modal_train.py --skip-download        # train
-modal run scripts/modal_train.py::generate              # sample from best_model.pt
-modal run scripts/modal_train.py::ckpt_history          # per-epoch val loss from checkpoints
-```
-
-The `.modalignore` keeps `data/`, `checkpoints/`, `logs/` and `*.npz` out of the
-source image; datasets and checkpoints live on the persistent `miniseek-data`
-volume at `/data`.
+The `.modalignore` keeps `data/`, `checkpoints/`, `logs/`, `scratch/` and
+`*.npz` out of the source image; datasets and checkpoints live on the persistent
+`miniseek-data` volume at `/data`.
 
 ## Roadmap
 
 ```
-Phase 1: Dense baseline (17.7M)        ✓ committed
-Phase 2: Dense control (100M)          ◷ prepared (config + budget-aware training)
+Phase 1: Dense baseline (17.7M)             ✓ complete (val 3.658)
+Phase 2: Dense control (101.4M)             ✓ complete (val 3.169, $17.02)
 Phase 3: Experiments (MLA, MoE, MTP)
-Phase 4: Final Miniseek (100–150M)
+Phase 4: Final Miniseek (100–150M, 1B+ tokens)
 ```
-
-## Phase 2: Dense control (101.4M)
-
-Same data, same token budget as Phase 1 — but a 101.4M dense model so loss can
-fall below Phase 1's 3.66. Config: `configs/phase2_100m.yaml`
-(d=704, 12 layers, 8 heads, SwiGLU 1664, tied embeddings → 101.36M params,
-verified by `expected_params_million: 101.36`).
-
-Activations at `batch 32 × seq 1024 × d704 × 12 layers` OOM a 24GB A10G (batch 16
-teeters ~1% over because `cross_entropy` materializes an fp32 copy of the 50K
-logits). The config therefore trains at **batch 8 × grad_accum_steps 4** = an
-effective **batch-32 gradient** (verified byte-for-byte equivalent to a real
-batch-32 step) while only holding 8 windows in VRAM — no GPU change needed.
-
-### Budget-aware training (cap = $24)
-
-- Phase 2 carries a **cost cap** (`budget_usd: 24.0`) tracked in a persistent
-  ledger at `<log_dir>/cost_ledger.json`, cumulative across every run and resume.
-- Cost is estimated from GPU wall-time × `usd_per_hour: 2.0` (measured $6 / ~3h
-  on A10G during Phase 1).
-- The trainer stops cleanly **before** an epoch that would exceed the cap, or
-  **mid-epoch** if spend already crossed it, and saves a full-state
-  `latest.pt` (model + optimizer + scheduler + scaler + RNG + step).
-- Launch: `modal run scripts/modal_train.py --config-name phase2_100m.yaml` — it
-  auto-resumes from `latest.pt` or the newest epoch checkpoint.
-
-### Resuming across Modal accounts
-
-Everything needed to continue lives in one volume-backed checkpoint file. To
-continue on a second account:
-
-```bash
-# on account #1 - pull the final state
-modal volume get miniseek-data /data/checkpoints/phase2_100m ./phase2_ckpt
-
-# on account #2 - push it into a volume with the same name
-modal volume put miniseek-data ./phase2_ckpt /data/checkpoints/phase2_100m
-
-modal run scripts/modal_train.py --config-name phase2_100m.yaml --resume latest.pt
-```
-
-If the ledger on the new account already shows spend ≥ the cap, either raise
-`budget_usd` or set `allow_over_budget: true` (the state is still perfectly
-valid — the ledger only guards spend).
 
 ## References
 
 - GPT-2 / nanoGPT (Karpathy)
 - LLaMA architecture (RoPE, RMSNorm, SwiGLU)
 - WikiText-103 benchmark
+- Chinchilla scaling laws (data × model-size trade-offs)

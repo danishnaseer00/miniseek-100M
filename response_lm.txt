@@ -56,4 +56,93 @@ The chemical formula for water is H2O2 − 0 @.@ 0 × 10 − 1 + 0 @.@ 0 × 10 �
 PROMPT: 2 + 2 is equal to
 RESPONSE:
 2 + 2 is equal to 2 , as <form2O + , is the product of the + + + + + − + − + + − − + − + + − + + − − + + + + + − + + − − . The + + + + + − + + ( − + + + − ) is the + + + + + + + + + + + + + + + +
+
+# ==============================================================================
+# Phase 2: 101.4M dense control (phase2_100m.yaml)
+# Checkpoint: best_model.pt (5 epochs, WikiText-103, val ppl 23.8)
+# Run A sampling: temperature 0.7, top-k 40   (general prompts + memorization check)
+# Run B sampling: temperature 0.1, top-k 5    (knowledge probing)
+# ==============================================================================
+
+# ---- Run A: general prompts (with training-data overlap check) ----
+
+PROMPT: Write a short story about a penguin
+RESPONSE:
+Write a short story about a penguin . In an interview , Dr. Caulfield said that he " decided that it would not have been a fully aquatic " .
+= = = = = = = = = = = = = = =
+= = = Reception = = =
+The British Army was commanded by Major General Charles Churchill , commander @-@ in @-@ chief of the Army 's 1st Division . Churchill 's strategy was to cut off the German line , but the Australian divisions were unable to move to the north of the Suez Canal . Churchill 's plan had been to attack the town , and the Allied forces , despite their support , had forced the French to retreat . The British were unable to reach the river , and the
+[memorization] longest verbatim span in training data: 0 tokens
+
+PROMPT: As the florborg blooped across the
+RESPONSE:
+As the florborg blooped across the world . In the summer of 1873 , the ship was laid down by the Royal Navy , and was launched on 9 June 1873 . She was launched on 18 June 1875 and commissioned into the naval review .
+In early 1941 , the RAAF and the Royal Australian Air Force had formed a division of the Royal Australian Navy , which consisted of the Royal Australian Navy ( RAAF ) , Royal Australian Air Force ( RAAF ) , and the Royal Australian Air Force . The RAAF was formed on 10 June ; the RAAF was formed in the newly formed RAAF , with the RAAF being formed in early 1942 . The RAAF 's first formation , the RAAF , was formed in December 1942 , followed by the RAAF in January 1943 . The RAAF was formed as
+[memorization] longest verbatim span in training data: 0 tokens
+
+PROMPT: In the year 2077, a person
+RESPONSE:
+In the year 2077, a person who had been killed in an attack on St. Petersburg at the Battle of the St. Petersburg . They lost all his men to the Russian forces .
+= = = = = = = = = = = = = = = = = = =
+= = = = International = = = =
+In March , the New York State Department of Transportation ( NYSDOT ) approved a $ 1 @.@ 5 million upgrade to a new highway through the hamlet of San Diego , California . This upgrade will be completed in March 2013 .
+In May 2015 , the band recorded their first album , The Black Eyed Peacock , in the studio . It was released on March 15 ,
+[memorization] longest verbatim span in training data: 0 tokens
+
+PROMPT: Albert Einstein developed
+RESPONSE:
+Albert Einstein developed in the late 19th century , a post @-@ war science fiction story , which was published in 1809 and published by the University of Oxford . This story was published in 1814 and published in 1820 , and has been published by the American Society of Science Fiction .
+= = = = = 2014 = = = = =
+= = = = = = = = = = = = = = = = = = = = = = = =
+= = = = Box office = = = =
+= = = = 2015 = = = = =
+= = = = In other media = = = =
+= = = = Week 11 : vs. Texas A & M = = = =
+= = = Background = = =
+[memorization] longest verbatim span in training data: 1 tokens
+
+PROMPT: The chemical formula for water is H
+RESPONSE:
+The chemical formula for water is H @-@ 2 which has low pressure and low pressure . It is thus the most common chemical formula for air use for the water . The most common chemical formula for air @-@ to @-@ air is the use of water , which is applied to water in a large range of water and in an area the most common . The United States has the most common chemical formula for air @-@ to @-@ air , which is used for the use of water .
+[memorization] longest verbatim span in training data: 0 tokens
+
+PROMPT: 2 + 2 is equal to
+RESPONSE:
+2 + 2 is equal to the 0.5c4 + 2 −
+= = = = 2008 season = = = =
+= = = = = Critical reception = = = =
+The second floor of the building , which was completed in 1912 , housed the interior of the building . It was designed by Henry S. Hutton . The two @-@ story hall , the building 's two @-@ storey , three @-@ story building and the four @-@ story basement and the kitchen . The roof was completed in 1914 and was completed in 1912 .
+[memorization] longest verbatim span in training data: 0 tokens
+
+# ---- Run B: knowledge probing (temperature 0.1, top-k 5) ----
+
+PROMPT: The capital of France is
+RESPONSE: The capital of France is the capital of the Kingdom of France .
+
+PROMPT: Albert Einstein was born in
+RESPONSE: Albert Einstein was born in the city of San Francisco , and was born in the city of San Francisco . The family moved to the city in 1887
+
+PROMPT: Photosynthesis is the process by which plants
+RESPONSE: Photosynthesis is the process by which plants are used for the use of the plant .
+
+PROMPT: The Earth revolves around the
+RESPONSE: The Earth revolves around the city of the city , the city is surrounded by a large area of the city . The city is also home to the city
+
+PROMPT: Water freezes at 0 degrees Celsius and boils at
+RESPONSE: Water freezes at 0 degrees Celsius and boils at 0 degrees altitude .
+
+PROMPT: World War II began in
+RESPONSE: World War II began in the late 1950s . The first major conflict between the United States and the United States was between the United States and the United
+
+PROMPT: The Roman Empire was
+RESPONSE: The Roman Empire was a major centre of the Roman Empire .
+
+PROMPT: The human heart is responsible for
+RESPONSE: The human heart is responsible for the destruction of the human body . The human body is also responsible for the destruction of the human body . The human body is
+
+PROMPT: The largest planet in the Solar System is
+RESPONSE: The largest planet in the Solar System is the Solar System , which is located in the Solar System . The planet is located in the Solar System , and is located in
+
+PROMPT: A computer's CPU is responsible for
+RESPONSE: A computer's CPU is responsible for the use of the " C " , and the " C " is used for the " C " , which is used for
 [memorization] longest verbatim span in training data: 0 tokens
