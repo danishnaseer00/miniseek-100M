@@ -1,0 +1,46 @@
+model:
+  dim: 704
+  n_layers: 12
+  n_heads: 8
+  mlp_hidden_dim: 1664
+  max_seq_len: 1024
+  dropout: 0.1
+  tie_embeddings: true
+
+training:
+  batch_size: 32
+  num_epochs: 5
+  learning_rate: 6e-4
+  min_lr: 6e-5
+  weight_decay: 0.01
+  grad_clip: 1.0
+  warmup_steps: 200
+
+  mixed_precision: true
+  num_workers: 0
+
+  save_every: 1
+  save_every_steps: 500
+  budget_check_every: 25
+  checkpoint_dir: "./checkpoints/phase2_100m"
+  log_dir: "./logs/phase2_100m"
+
+  # Cost cap (cumulative across resumptions, tracked in <log_dir>/cost_ledger.json).
+  # Rate: measured $6 / ~3h A10G from the phase-1 run.
+  budget_usd: 24.0
+  usd_per_hour: 2.0
+  allow_over_budget: false
+
+data:
+  dataset: "wikitext-103-raw-v1"
+  tokenizer: "gpt2"
+  cache_dir: "./data"
+
+wandb:
+  use_wandb: false
+  wandb_project: "miniseek-phase2"
+  wandb_entity: null
+
+device: "auto"
+
+expected_params_million: 101.36

@@ -147,10 +147,48 @@ volume at `/data`.
 
 ```
 Phase 1: Dense baseline (17.7M)        ✓ committed
-Phase 2: Dense control (100M, temp.)   ◷ next
+Phase 2: Dense control (100M)          ◷ prepared (config + budget-aware training)
 Phase 3: Experiments (MLA, MoE, MTP)
 Phase 4: Final Miniseek (100–150M)
 ```
+
+## Phase 2: Dense control (101.4M)
+
+Same data, same token budget as Phase 1 — but batch 32 and 101.4M params so loss
+can fall below Phase 1's 3.66. Config: `configs/phase2_100m.yaml`
+(d=704, 12 layers, 8 heads, SwiGLU 1664, tied embeddings → 101.36M params,
+verified by `expected_params_million: 101.36`).
+
+### Budget-aware training (cap = $24)
+
+- Phase 2 carries a **cost cap** (`budget_usd: 24.0`) tracked in a persistent
+  ledger at `<log_dir>/cost_ledger.json`, cumulative across every run and resume.
+- Cost is estimated from GPU wall-time × `usd_per_hour: 2.0` (measured $6 / ~3h
+  on A10G during Phase 1).
+- The trainer stops cleanly **before** an epoch that would exceed the cap, or
+  **mid-epoch** if spend already crossed it, and saves a full-state
+  `latest.pt` (model + optimizer + scheduler + scaler + RNG + step).
+- Launch: `modal run scripts/modal_train.py --config-name phase2_100m.yaml` — it
+  auto-resumes from `latest.pt` or the newest epoch checkpoint.
+
+### Resuming across Modal accounts
+
+Everything needed to continue lives in one volume-backed checkpoint file. To
+continue on a second account:
+
+```bash
+# on account #1 - pull the final state
+modal volume get miniseek-data /data/checkpoints/phase2_100m ./phase2_ckpt
+
+# on account #2 - push it into a volume with the same name
+modal volume put miniseek-data ./phase2_ckpt /data/checkpoints/phase2_100m
+
+modal run scripts/modal_train.py --config-name phase2_100m.yaml --resume latest.pt
+```
+
+If the ledger on the new account already shows spend ≥ the cap, either raise
+`budget_usd` or set `allow_over_budget: true` (the state is still perfectly
+valid — the ledger only guards spend).
 
 ## References
 

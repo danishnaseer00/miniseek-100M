@@ -1,9 +1,12 @@
 import json
 import math
 import os
+import random
 import re
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
@@ -49,6 +52,41 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return {k: _coerce(v) for k, v in merged.items()}
 
 
+class CostLedger:
+    """Cumulative GPU-time/cost accounting persisted next to the JSONL log.
+
+    Lives in <log_dir>/cost_ledger.json so multiple runs (and resumptions on
+    other Modal accounts sharing the volume) accumulate spend against the
+    same budget cap.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self._data = {"total_gpu_seconds": 0.0, "total_cost_usd": 0.0}
+        self.total_gpu_seconds = 0.0
+        self.total_cost_usd = 0.0
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self._data = json.load(f)
+                self.total_gpu_seconds = float(self._data.get("total_gpu_seconds", 0.0))
+                self.total_cost_usd = float(self._data.get("total_cost_usd", 0.0))
+            except Exception as e:
+                print(f"WARNING: could not read cost ledger {path}: {e}")
+
+    def add_seconds(self, seconds: float, usd_per_sec: float):
+        self.total_gpu_seconds += seconds
+        self.total_cost_usd += seconds * usd_per_sec
+
+    def save(self):
+        self._data["total_gpu_seconds"] = self.total_gpu_seconds
+        self._data["total_cost_usd"] = self.total_cost_usd
+        tmp = f"{self.path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self._data, f)
+        os.replace(tmp, self.path)
+
+
 class Trainer:
     def __init__(self, raw_config: Dict[str, Any]):
         self.config = flatten_config(raw_config)
@@ -85,6 +123,13 @@ class Trainer:
         total_params = self.model.count_parameters()
         print(f"Model parameters: {total_params:,} ({total_params / 1e6:.2f}M)")
 
+        expected_m = cfg.get("expected_params_million")
+        if expected_m and abs(total_params / 1e6 - expected_m) > max(0.5, expected_m * 0.02):
+            raise ValueError(
+                f"Expected {expected_m}M params but model has {total_params/1e6:.2f}M. "
+                "Fix the config before training."
+            )
+
         self.optimizer = AdamW(
             self.model.parameters(),
             lr=cfg.get("learning_rate", 3e-4),
@@ -108,8 +153,8 @@ class Trainer:
         self.train_loader = mk_loader("train", shuffle=True)
         self.val_loader = mk_loader("validation", shuffle=False)
 
-        steps_per_epoch = max(1, len(self.train_loader))
-        total_steps = steps_per_epoch * cfg.get("num_epochs", 10)
+        self.steps_per_epoch = max(1, len(self.train_loader))
+        total_steps = self.steps_per_epoch * cfg.get("num_epochs", 10)
         lr = cfg.get("learning_rate", 3e-4)
         eta_min = cfg.get("min_lr", lr * 0.1)
 
@@ -162,50 +207,166 @@ class Trainer:
         self.log_file = os.path.join(self.log_dir, "training_log.jsonl")
         print(f"Training log: {self.log_file}")
 
+        # --- budget / cost accounting -----------------------------------
+        self.ledger = CostLedger(os.path.join(self.log_dir, "cost_ledger.json"))
+        self.budget_usd = float(cfg.get("budget_usd", 0.0) or 0.0)
+        self.usd_per_sec = float(cfg.get("usd_per_hour", 2.0)) / 3600.0
+        self.allow_over_budget = bool(cfg.get("allow_over_budget", False))
+        self.on_ledger_write = None
+        self._run_gpu_seconds = 0.0
+        self._run_started = time.monotonic()
+        self.epoch_secs: list = []
+        self._last_periodic_sync_step = 0
+        print(
+            f"Budget: cap=${self.budget_usd:.2f} | spent=${self.ledger.total_cost_usd:.4f} "
+            f"({self.ledger.total_gpu_seconds:.0f}s) | rate=${self.usd_per_sec*3600:.2f}/h | "
+            f"allow_over_budget={self.allow_over_budget}"
+        )
+
         self.global_step = 0
         self.start_epoch = 1
+        self.resume_step = 0
         self.best_val_loss = float("inf")
 
         resume = cfg.get("resume_checkpoint")
         if resume and os.path.exists(resume):
             self.load_checkpoint(resume)
 
-    def save_checkpoint(self, path: str, epoch: int, val_loss: float):
+    # ------------------------------------------------------------------ checkpoint
+    def save_checkpoint(
+        self,
+        path: str,
+        epoch: int,
+        val_loss: float,
+        epoch_in_progress: Optional[int] = None,
+        step_in_epoch: Optional[int] = None,
+    ):
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        rng = {
+            "torch_rng_state": torch.get_rng_state(),
+            "random_state": random.getstate(),
+            "numpy_random_state": np.random.get_state(),
+        }
+        if torch.cuda.is_available():
+            rng["torch_cuda_rng_state"] = torch.cuda.get_rng_state_all()
+
         torch.save({
             "epoch": epoch,
+            "epoch_in_progress": epoch_in_progress,
+            "step_in_epoch": step_in_epoch,
+            "steps_per_epoch": self.steps_per_epoch,
             "global_step": self.global_step,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
+            "scaler_state_dict": self.scaler.state_dict(),
             "val_loss": val_loss,
             "best_val_loss": self.best_val_loss,
             "config": self.config,
+            "rng": rng,
         }, path)
         print(f"Checkpoint saved to {path}")
 
     def load_checkpoint(self, path: str):
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        self.global_step = checkpoint.get("global_step", 0)
-        self.start_epoch = checkpoint.get("epoch", 1) + 1
-        self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
-        print(f"Checkpoint loaded from {path}, step {self.global_step}")
+        if "scaler_state_dict" in checkpoint and checkpoint["scaler_state_dict"]:
+            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
+        rng = checkpoint.get("rng", {})
+        if "torch_rng_state" in rng:
+            torch.set_rng_state(rng["torch_rng_state"])
+        if "random_state" in rng:
+            random.setstate(rng["random_state"])
+        if "numpy_random_state" in rng:
+            np.random.set_state(rng["numpy_random_state"])
+        if "torch_cuda_rng_state" in rng and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(rng["torch_cuda_rng_state"])
+
+        self.global_step = checkpoint.get("global_step", 0)
+        self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+
+        epoch = checkpoint.get("epoch", 1)
+        in_progress = checkpoint.get("epoch_in_progress")
+        step_in_epoch = checkpoint.get("step_in_epoch") or 0
+        if in_progress is not None:
+            self.start_epoch = int(in_progress)
+            self.resume_step = int(step_in_epoch)
+        else:
+            self.start_epoch = int(epoch) + 1
+            self.resume_step = 0
+
+        ckpt_steps = checkpoint.get("steps_per_epoch")
+        if ckpt_steps and ckpt_steps != self.steps_per_epoch:
+            print(
+                f"WARNING: checkpoint steps/epoch={ckpt_steps} != current {self.steps_per_epoch}; "
+                "cosine schedule may misalign."
+            )
+        print(
+            f"Checkpoint loaded from {path}: resume epoch {self.start_epoch} at step "
+            f"{self.resume_step}/{self.steps_per_epoch}, global step {self.global_step}"
+        )
+
+    # ------------------------------------------------------------------ logging / ledger
     def _write_log(self, record: Dict[str, Any]):
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
-    def train_epoch(self, epoch: int):
+    def _sync_ledger(self):
+        self.ledger.add_seconds(self._run_gpu_seconds, self.usd_per_sec)
+        self._run_gpu_seconds = 0.0
+        self.ledger.save()
+        if self.on_ledger_write is not None:
+            try:
+                self.on_ledger_write()
+            except Exception as e:
+                print(f"WARNING: ledger sync callback failed: {e}")
+
+    def _budget_exhausted(self) -> bool:
+        if not (self.budget_usd > 0) or self.allow_over_budget:
+            return False
+        spent = self.ledger.total_cost_usd + self._run_gpu_seconds * self.usd_per_sec
+        return spent >= self.budget_usd
+
+    def _projected_next_epoch_cost(self) -> float:
+        if not self.epoch_secs:
+            return 0.0
+        avg = sum(self.epoch_secs[-3:]) / len(self.epoch_secs[-3:])
+        return avg * 1.05 * self.usd_per_sec
+
+    def _budget_projected_over(self) -> bool:
+        if not (self.budget_usd > 0) or self.allow_over_budget:
+            return False
+        return (self.ledger.total_cost_usd + self._projected_next_epoch_cost()) > self.budget_usd
+
+    # ------------------------------------------------------------------ training
+    def train_epoch(self, epoch: int, resume_step: int) -> Tuple[float, bool]:
+        """Train one epoch. Returns (avg_loss_so_far, budget_stopped)."""
         self.model.train()
         total_loss = 0.0
+        n = 0
+        epoch_t0 = time.monotonic()
 
         self.train_loader.dataset.set_epoch(epoch)
 
-        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}")
+        save_every_steps = int(self.config.get("save_every_steps", 500) or 500)
+        budget_check_every = int(self.config.get("budget_check_every", 25) or 25)
+        checkpoint_dir = self.config.get("checkpoint_dir", "./checkpoints")
+        latest_path = os.path.join(checkpoint_dir, "latest.pt")
+
+        pbar = tqdm(
+            self.train_loader,
+            desc=f"Epoch {epoch}",
+            initial=resume_step,
+            total=self.steps_per_epoch,
+        )
         for batch_idx, batch in enumerate(pbar):
+            if batch_idx < resume_step:
+                continue
+
+            step_t0 = time.monotonic()
             input_ids = batch["input_ids"].to(self.device)
             targets = batch["targets"].to(self.device)
 
@@ -229,7 +390,9 @@ class Trainer:
             self.scheduler.step()
 
             total_loss += loss.item()
+            n += 1
             self.global_step += 1
+            self._run_gpu_seconds += time.monotonic() - step_t0
 
             pbar.set_postfix({"loss": loss.item(), "lr": self.scheduler.get_last_lr()[0]})
 
@@ -240,8 +403,34 @@ class Trainer:
                     "train/step": self.global_step,
                 })
 
-        avg_loss = total_loss / len(self.train_loader)
-        return avg_loss
+            if self.global_step % save_every_steps == 0:
+                self.save_checkpoint(
+                    latest_path,
+                    epoch,
+                    float("nan"),
+                    epoch_in_progress=epoch,
+                    step_in_epoch=batch_idx + 1,
+                )
+                self._sync_ledger()
+
+            if self.global_step % budget_check_every == 0 and self._budget_exhausted():
+                print(
+                    f"\nBUDGET STOP at step {self.global_step}: spent "
+                    f"${self.ledger.total_cost_usd + self._run_gpu_seconds*self.usd_per_sec:.3f} "
+                    f"vs cap ${self.budget_usd:.2f}. Saving state."
+                )
+                self.save_checkpoint(
+                    latest_path,
+                    epoch,
+                    float("nan"),
+                    epoch_in_progress=epoch,
+                    step_in_epoch=batch_idx + 1,
+                )
+                self._sync_ledger()
+                return total_loss / max(1, n), True
+
+        self.epoch_secs.append(time.monotonic() - epoch_t0)
+        return total_loss / max(1, n), False
 
     @torch.no_grad()
     def validate(self):
@@ -270,12 +459,26 @@ class Trainer:
         checkpoint_dir = self.config.get("checkpoint_dir", "./checkpoints")
         save_every = self.config.get("save_every", 1)
 
-        for epoch in range(self.start_epoch, num_epochs + 1):
+        budget_stopped = False
+        epoch = int(self.start_epoch)
+
+        while epoch <= num_epochs:
+            if self._budget_projected_over():
+                budget_stopped = True
+                self._sync_ledger()
+                break
+
             print(f"\n{'='*50}")
             print(f"Epoch {epoch}/{num_epochs}")
             print(f"{'='*50}")
 
-            train_loss = self.train_epoch(epoch)
+            resume_step = self.resume_step if epoch == self.start_epoch else 0
+            self.resume_step = 0
+
+            train_loss, budget_stopped = self.train_epoch(epoch, resume_step)
+            if budget_stopped:
+                break
+
             val_loss, perplexity = self.validate()
 
             print(f"Train Loss: {train_loss:.4f}")
@@ -305,6 +508,7 @@ class Trainer:
                     val_loss,
                 )
 
+            self._sync_ledger()
             self._write_log({
                 "epoch": epoch,
                 "global_step": self.global_step,
@@ -312,13 +516,29 @@ class Trainer:
                 "val_loss": round(float(val_loss), 6),
                 "perplexity": round(float(perplexity), 4),
                 "best_val_loss": round(float(self.best_val_loss), 6),
+                "cost_usd_total": round(float(self.ledger.total_cost_usd), 5),
+                "gpu_seconds_total": round(float(self.ledger.total_gpu_seconds), 1),
                 "checkpoint_dir": checkpoint_dir,
             })
+            epoch += 1
 
+        self._sync_ledger()
         if self.wandb is not None:
             self.wandb.finish()
 
-        print("\nTraining complete!")
+        print(f"\nGPU time this session: {time.monotonic() - self._run_started:.0f}s")
+        print(
+            f"Total cost (ledger): ${self.ledger.total_cost_usd:.4f} "
+            f"over {self.ledger.total_gpu_seconds:.0f}s GPU"
+        )
+        if budget_stopped:
+            print(
+                "Stopped early due to budget.\n"
+                "To resume: rerun with --checkpoint <checkpoint_dir>/latest.pt. "
+                "If the cap is already spent, raise budget_usd or set allow_over_budget: true."
+            )
+        else:
+            print("Training complete!")
 
 
 def train_from_config(config_path: str):

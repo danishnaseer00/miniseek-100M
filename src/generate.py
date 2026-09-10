@@ -11,7 +11,7 @@ def load_model_from_checkpoint(
     device: str = "cuda",
     vocab_size: Optional[int] = None,
 ):
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = checkpoint["config"]
 
     if vocab_size is None:

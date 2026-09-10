@@ -9,6 +9,7 @@ Usage:
 """
 
 import os
+from typing import Optional
 
 import modal
 
@@ -75,12 +76,16 @@ def download_data():
     print("Data cached on volume.")
 
 
+def _run_dir(config_name: str) -> str:
+    return os.path.join(CKPT_DIR, os.path.splitext(config_name)[0])
+
+
 @app.function(
     gpu="A10G",
     timeout=3600 * 12,
     memory=32768,
 )
-def train(config_name: str = "phase1_debug.yaml"):
+def train(config_name: str = "phase1_debug.yaml", resume: Optional[str] = None):
     _setup_env()
 
     import torch
@@ -93,40 +98,50 @@ def train(config_name: str = "phase1_debug.yaml"):
     with open(cfg_path) as f:
         raw = yaml.safe_load(f)
 
+    run_dir = _run_dir(config_name)
     raw["data"]["cache_dir"] = DATASET_CACHE
     raw["data"]["max_seq_len"] = raw["model"]["max_seq_len"]
     raw["training"]["num_workers"] = 0
-    raw["training"]["checkpoint_dir"] = CKPT_DIR
-    raw["training"]["log_dir"] = f"{DATA_DIR}/logs"
+    raw["training"]["checkpoint_dir"] = run_dir
+    raw["training"]["log_dir"] = f"{DATA_DIR}/logs/{os.path.splitext(config_name)[0]}"
     raw["device"] = "auto"
 
     from src.train import Trainer
 
-    if os.path.isdir(CKPT_DIR):
-        latest = max(
-            (
+    if resume:
+        raw["training"]["resume_checkpoint"] = os.path.join(run_dir, resume)
+        print(f"Resuming from explicit checkpoint {resume}")
+    elif os.path.isdir(run_dir):
+        latest = os.path.join(run_dir, "latest.pt")
+        if os.path.exists(latest):
+            raw["training"]["resume_checkpoint"] = latest
+            print("Resuming from latest.pt")
+        else:
+            ckpts = [
                 f
-                for f in os.listdir(CKPT_DIR)
+                for f in os.listdir(run_dir)
                 if f.startswith("checkpoint_epoch_") and f.endswith(".pt")
-            ),
-            default=None,
-            key=lambda f: int(f.removeprefix("checkpoint_epoch_").removesuffix(".pt")),
-        )
-        if latest:
-            raw["training"]["resume_checkpoint"] = os.path.join(CKPT_DIR, latest)
-            print(f"Resuming from {latest}")
+            ]
+            if ckpts:
+                newest = max(
+                    ckpts,
+                    key=lambda f: int(f.removeprefix("checkpoint_epoch_").removesuffix(".pt")),
+                )
+                raw["training"]["resume_checkpoint"] = os.path.join(run_dir, newest)
+                print(f"Resuming from {newest}")
 
     trainer = Trainer(raw)
 
-    os.makedirs(CKPT_DIR, exist_ok=True)
+    os.makedirs(run_dir, exist_ok=True)
 
     original_save = trainer.save_checkpoint
 
-    def save_and_commit(path: str, epoch: int, val_loss: float):
-        original_save(path, epoch, val_loss)
+    def save_and_commit(path: str, epoch: int, val_loss: float, **kwargs):
+        original_save(path, epoch, val_loss, **kwargs)
         volume.commit()
 
     trainer.save_checkpoint = save_and_commit
+    trainer.on_ledger_write = lambda: volume.commit()
     trainer.train()
     volume.commit()
     print("Training complete. Checkpoints committed to volume.")
@@ -139,12 +154,11 @@ def generate(
     temperature: float = 0.8,
     top_k: int = 40,
     memorization_check: bool = True,
+    run_name: Optional[str] = None,
 ):
     _setup_env()
 
     import json
-
-    import numpy as np
 
     from src.generate import generate_text, load_model_from_checkpoint
     from src.tokenizer import Tokenizer
@@ -159,7 +173,8 @@ def generate(
     ]
     probe_prompts = json.loads(prompts) or default_prompts
 
-    ckpt_path = f"{CKPT_DIR}/best_model.pt"
+    run_dir = CKPT_DIR if run_name is None else _run_dir(run_name)
+    ckpt_path = f"{run_dir}/best_model.pt"
     tokenizer = Tokenizer("gpt2", max_length=1024)
     model, config = load_model_from_checkpoint(ckpt_path, device="cpu", vocab_size=tokenizer.vocab_size)
 
@@ -227,7 +242,7 @@ def longest_exact_match(needle, haystack):
 
 
 @app.function(timeout=1800, memory=8192)
-def ckpt_history():
+def ckpt_history(run_name: Optional[str] = None):
     _setup_env()
 
     import glob
@@ -235,18 +250,21 @@ def ckpt_history():
 
     import torch
 
+    ckpt_dir = CKPT_DIR if run_name is None else _run_dir(run_name)
+
     def key(path):
         return int(os.path.basename(path).removeprefix("checkpoint_epoch_").removesuffix(".pt"))
 
     rows = []
-    for path in sorted(glob.glob(f"{CKPT_DIR}/checkpoint_epoch_*.pt"), key=key):
-        ckpt = torch.load(path, map_location="cpu")
+    for path in sorted(glob.glob(f"{ckpt_dir}/checkpoint_epoch_*.pt"), key=key):
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
         rows.append(
             {
                 "epoch": ckpt.get("epoch"),
                 "global_step": ckpt.get("global_step"),
                 "val_loss": round(float(ckpt.get("val_loss", float("nan"))), 4),
                 "best_val_loss": round(float(ckpt.get("best_val_loss", float("nan"))), 4),
+                "cost_usd_total": round(float(ckpt.get("cost_usd_total", 0.0)), 4),
             }
         )
     print("CKPT_HISTORY_JSON:" + json.dumps(rows))
