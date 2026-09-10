@@ -1,0 +1,59 @@
+# Miniseek 17.7M baseline (phase1_debug.yaml) - model-generated responses
+# Checkpoint: best_model.pt (5 epochs, WikiText-103, val ppl 38.79)
+# Sampling: temperature 0.8, top-k 40
+
+# ---- Run 1: general prompts ----
+
+PROMPT: The history of the Roman Empire
+RESPONSE:
+The history of the Roman Empire and its religious history . The Church of Scotland ( 1616 – 1672 ) was established within the Roman Empire in the mid @-@ eighteenth century as a " part of the kingdom " . The church is primarily based on the Early Roman style of the English language . It was used as a major center of medieval and medieval building , and was also used at some point later in the century .
+= = = Reactions = = =
+The first known recorded record of the song was a song written by a band who started touring the country in 1983 . The band had performed " I 'll Be There " on their 1985 album Bad World Tribute to the Beatles , which was recorded in September 1984 . The song was recorded live on
+
+PROMPT: Photosynthesis is the process by which
+RESPONSE:
+Photosynthesis is the process by which evolution is not directly related to the evolution of the Earth . It is difficult to determine the behavior of a planet .
+In March 2013 , the Australian television channel ITV began airing their " A " episode of the series . The network also began airing the series in Australia . The series was broadcast throughout the United Kingdom , and included the first two episodes of the series , " The A " and " The Cops " . The series was included in the set list on the 2000 TV series Supernatural , airing on 2 January 2012 . The series featured the first episode and the first episode , " The Cops " , which took place in Australia and New Zealand . The pilot was featured in the pilot episode , " The Cops " , which
+
+PROMPT: In 1969, humans first
+RESPONSE:
+In 1969, humans first took off the field for the race at the Soudal de la Plata . The race took place at Alestairne in the Noyes district , and the race took place at the Mont Blanc , where the race held first and followed at Alestairne on 28 June 1979 .
+The British government had been concerned that the invasion was as an opportunity to destroy the British , and by the mid @-@ 18th century the British government had ordered that the British and Dutch troops be transferred to the new invasion , and that a British invasion force would be sent . Britain considered that to accept the British 's demands from Britain , the Allies had decided to withdraw . The English would also agree to allow British and Dutch troops to
+
+# ---- Run 2: probing whether it learns vs memorizes (with training-data overlap check) ----
+
+PROMPT: Write a short story about a penguin
+RESPONSE:
+Write a short story about a penguin 's second wife and her half @-@ brother , Margaret ( Elizabeth ) .
+" You Can 't Stop " was written by Jay @-@ Z and Beyoncé , with lyrics by Sean Waltz from Love . The song is a song written by a girl who , according to Beyoncé , is a " big fan " . " You Can 't Stop " was written by
+[memorization] longest verbatim span in training data: 0 tokens
+
+PROMPT: As the florborg blooped across the
+RESPONSE:
+As the florborg blooped across the Atlantic . The northernmost part of the northern part of the island is the main island , the main island of the Isle of Wight . The islands are the largest of the mainland and the largest island of the island in the world .
+= = = = The Battle of the Yalu River = = = =
+= = = Other names = = =
+= = =
+[memorization] longest verbatim span in training data: 0 tokens
+
+PROMPT: In the year 2077, a person
+RESPONSE:
+In the year 2077, a person who was a fellow in the House of Lordship and she had to move into the Crown , where she had to live behind her . She died in 1582 , and was buried at the Roman churchyard .
+On 18 November , the German Navy began a series of tests conducted by German submarine U @-@ 1 , which lasted until March 1938 . It was concluded that , by the end
+[memorization] longest verbatim span in training data: 0 tokens
+
+PROMPT: Albert Einstein developed
+RESPONSE:
+Albert Einstein developed in the 1890s . It is a form of the new work that was published in 1891 and by his wife , Mary , and the couple were married in the same year — the first child of Elizabeth 's parents had died and that year they had been married .
+The music video was directed by The Black Eyed Peas and directed by Greg Kot and directed by Tim Burton . She
+[memorization] longest verbatim span in training data: 1 tokens
+
+PROMPT: The chemical formula for water is H
+RESPONSE:
+The chemical formula for water is H2O2 − 0 @.@ 0 × 10 − 1 + 0 @.@ 0 × 10 − 1 − 2 − 0 @.@ 0 × 10 − 2 − 2 − 2 − 2 − 1 − 2 and a + 3 − 2 − 1 − 2 − 2 − 1 − 2 − 2 − 1 + ... because the amount of water contains approximately 1 − 3 − 2 −
+[memorization] longest verbatim span in training data: 0 tokens
+
+PROMPT: 2 + 2 is equal to
+RESPONSE:
+2 + 2 is equal to 2 , as <form2O + , is the product of the + + + + + − + − + + − − + − + + − + + − − + + + + + − + + − − . The + + + + + − + + ( − + + + − ) is the + + + + + + + + + + + + + + + +
+[memorization] longest verbatim span in training data: 0 tokens

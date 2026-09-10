@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import re
@@ -30,6 +31,17 @@ def _coerce(value: Any) -> Any:
 
 
 def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    model_section = config.get("model") or {}
+    data_section = config.get("data") or {}
+
+    model_seq = model_section.get("max_seq_len")
+    data_seq = data_section.get("max_seq_len")
+    if model_seq is not None and data_seq is not None and int(model_seq) != int(data_seq):
+        raise ValueError(
+            f"model.max_seq_len ({model_seq}) != data.max_seq_len ({data_seq}); "
+            "keep a single max_seq_len in the model section"
+        )
+
     merged: Dict[str, Any] = {}
     for section in ("model", "training", "data", "wandb"):
         merged.update(config.get(section, {}) or {})
@@ -90,6 +102,7 @@ class Trainer:
             num_workers=num_workers,
             cache_dir=cfg.get("cache_dir", "./data"),
             max_docs=cfg.get("max_docs"),
+            dataset=cfg.get("dataset", "wikitext-103-raw-v1"),
         )
 
         self.train_loader = mk_loader("train", shuffle=True)
@@ -136,9 +149,18 @@ class Trainer:
             try:
                 import wandb
                 self.wandb = wandb
-                wandb.init(project=cfg.get("wandb_project", "miniseek"), config=cfg)
+                wandb.init(
+                    project=cfg.get("wandb_project", "miniseek"),
+                    entity=cfg.get("wandb_entity"),
+                    config=cfg,
+                )
             except ImportError:
                 print("wandb not installed - skipping logging")
+
+        self.log_dir = cfg.get("log_dir", "./logs")
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.log_file = os.path.join(self.log_dir, "training_log.jsonl")
+        print(f"Training log: {self.log_file}")
 
         self.global_step = 0
         self.start_epoch = 1
@@ -171,6 +193,10 @@ class Trainer:
         self.start_epoch = checkpoint.get("epoch", 1) + 1
         self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
         print(f"Checkpoint loaded from {path}, step {self.global_step}")
+
+    def _write_log(self, record: Dict[str, Any]):
+        with open(self.log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
 
     def train_epoch(self, epoch: int):
         self.model.train()
@@ -278,6 +304,16 @@ class Trainer:
                     epoch,
                     val_loss,
                 )
+
+            self._write_log({
+                "epoch": epoch,
+                "global_step": self.global_step,
+                "train_loss": round(float(train_loss), 6),
+                "val_loss": round(float(val_loss), 6),
+                "perplexity": round(float(perplexity), 4),
+                "best_val_loss": round(float(self.best_val_loss), 6),
+                "checkpoint_dir": checkpoint_dir,
+            })
 
         if self.wandb is not None:
             self.wandb.finish()

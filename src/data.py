@@ -15,15 +15,18 @@ class WikiTextDataset(Dataset):
         split: str = "train",
         cache_dir: Optional[str] = "./data",
         max_docs: Optional[int] = None,
+        dataset: str = "wikitext-103-raw-v1",
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.split = split
+        self.dataset = dataset
 
         tok_name = getattr(tokenizer, "name", "tok")
+        cache_prefix = "wikitext103" if dataset == "wikitext-103-raw-v1" else dataset.replace("/", "_")
         os.makedirs(cache_dir, exist_ok=True)
         self.cache_path = os.path.join(
-            cache_dir, f"wikitext103_{split}_{tok_name}_{max_length}.npz"
+            cache_dir, f"{cache_prefix}_{split}_{tok_name}_{max_length}.npz"
         )
 
         self.flat_tokens, self.doc_starts = self._load_or_tokenize(cache_dir, tok_name, max_docs)
@@ -45,7 +48,7 @@ class WikiTextDataset(Dataset):
             return data["tokens"], data["doc_starts"]
 
         print(f"Loading WikiText-103 {self.split} split...")
-        dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split=self.split, cache_dir=cache_dir)
+        dataset = load_dataset("wikitext", self.dataset, split=self.split, cache_dir=cache_dir)
 
         pieces: List[np.ndarray] = []
         lens: List[int] = []
@@ -87,13 +90,17 @@ class WikiTextDataset(Dataset):
         end = start + self.max_length + 1
 
         chunk = self._get_tokens(start, end)
+        n_real = len(chunk)
 
-        if len(chunk) < self.max_length + 1:
-            pad = np.full(self.max_length + 1 - len(chunk), self.tokenizer.eos_token_id, dtype=np.int32)
+        if n_real < self.max_length + 1:
+            pad = np.full(self.max_length + 1 - n_real, self.tokenizer.eos_token_id, dtype=np.int32)
             chunk = np.concatenate([chunk, pad])
 
         input_ids = torch.from_numpy(chunk[:-1].astype(np.int64))
         targets = torch.from_numpy(chunk[1:].astype(np.int64))
+
+        if n_real <= self.max_length:
+            targets[n_real - 1 :] = -1
 
         return {"input_ids": input_ids, "targets": targets}
 
@@ -133,17 +140,19 @@ def create_dataloader(
     num_workers: int = 0,
     cache_dir: Optional[str] = "./data",
     max_docs: Optional[int] = None,
+    dataset: str = "wikitext-103-raw-v1",
 ) -> DataLoader:
-    dataset = WikiTextDataset(
+    dataset_obj = WikiTextDataset(
         tokenizer=tokenizer,
         max_length=max_length,
         split=split,
         cache_dir=cache_dir,
         max_docs=max_docs,
+        dataset=dataset,
     )
 
     return DataLoader(
-        dataset,
+        dataset_obj,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
@@ -151,15 +160,16 @@ def create_dataloader(
     )
 
 
-def get_dataset_stats(split: str = "train", cache_dir: str = "./data") -> Dict:
-    dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split=split, cache_dir=cache_dir)
+def get_dataset_stats(split: str = "train", cache_dir: str = "./data", dataset: str = "wikitext-103-raw-v1") -> Dict:
+    ds = load_dataset("wikitext", dataset, split=split, cache_dir=cache_dir)
 
-    total_chars = sum(len(text) for text in dataset["text"])
-    total_docs = len([text for text in dataset["text"] if len(text.strip()) > 0])
+    total_chars = sum(len(text) for text in ds["text"])
+    total_docs = len([text for text in ds["text"] if len(text.strip()) > 0])
+    total_words = sum(len(text.split()) for text in ds["text"])
 
     return {
         "split": split,
         "total_chars": total_chars,
         "total_docs": total_docs,
-        "total_words": total_chars // 5,
+        "total_words": total_words,
     }

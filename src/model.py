@@ -136,7 +136,7 @@ class MiniseekDecoder(nn.Module):
 
 def create_model(config: dict) -> MiniseekDecoder:
     return MiniseekDecoder(
-        vocab_size=config.get("vocab_size", 32000),
+        vocab_size=config.get("vocab_size", 50257),
         dim=config.get("dim", 512),
         n_layers=config.get("n_layers", 8),
         n_heads=config.get("n_heads", 8),

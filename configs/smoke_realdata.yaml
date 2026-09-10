@@ -1,5 +1,4 @@
 model:
-  name: "miniseek-smoke"
   dim: 64
   n_layers: 2
   n_heads: 4
@@ -27,10 +26,9 @@ training:
   log_dir: "./logs/smoke"
 
 data:
-  dataset: "wikitext-103"
+  dataset: "wikitext-103-raw-v1"
   tokenizer: "gpt2"
   cache_dir: "./data"
-  max_seq_len: 128
 
 wandb:
   use_wandb: false

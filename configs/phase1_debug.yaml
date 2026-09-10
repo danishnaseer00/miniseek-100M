@@ -1,5 +1,4 @@
 model:
-  name: "miniseek-phase1"
   dim: 256
   n_layers: 6
   n_heads: 8
@@ -25,10 +24,9 @@ training:
   log_dir: "./logs/phase1"
 
 data:
-  dataset: "wikitext-103"
+  dataset: "wikitext-103-raw-v1"
   tokenizer: "gpt2"
   cache_dir: "./data"
-  max_seq_len: 1024
   
 wandb:
   use_wandb: false
@@ -37,4 +35,4 @@ wandb:
 
 device: "auto"
 
-expected_params_million: 21
+expected_params_million: 17.69

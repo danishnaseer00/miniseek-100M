@@ -97,6 +97,7 @@ def train(config_name: str = "phase1_debug.yaml"):
     raw["data"]["max_seq_len"] = raw["model"]["max_seq_len"]
     raw["training"]["num_workers"] = 0
     raw["training"]["checkpoint_dir"] = CKPT_DIR
+    raw["training"]["log_dir"] = f"{DATA_DIR}/logs"
     raw["device"] = "auto"
 
     from src.train import Trainer
@@ -129,6 +130,100 @@ def train(config_name: str = "phase1_debug.yaml"):
     trainer.train()
     volume.commit()
     print("Training complete. Checkpoints committed to volume.")
+
+
+@app.function(timeout=1800, memory=8192, cpu=2.0)
+def generate(
+    prompts: str = "[]",
+    max_new_tokens: int = 80,
+    temperature: float = 0.8,
+    top_k: int = 40,
+    memorization_check: bool = True,
+):
+    _setup_env()
+
+    import json
+
+    import numpy as np
+
+    from src.generate import generate_text, load_model_from_checkpoint
+    from src.tokenizer import Tokenizer
+
+    default_prompts = [
+        "Write a short story about a penguin",
+        "As the florborg blooped across the",
+        "In the year 2077, a person",
+        "Albert Einstein developed",
+        "The chemical formula for water is H",
+        "2 + 2 is equal to",
+    ]
+    probe_prompts = json.loads(prompts) or default_prompts
+
+    ckpt_path = f"{CKPT_DIR}/best_model.pt"
+    tokenizer = Tokenizer("gpt2", max_length=1024)
+    model, config = load_model_from_checkpoint(ckpt_path, device="cpu", vocab_size=tokenizer.vocab_size)
+
+    train_flat = None
+    if memorization_check:
+        from src.data import WikiTextDataset
+
+        train_flat = WikiTextDataset(
+            tokenizer=tokenizer,
+            max_length=1024,
+            split="train",
+            cache_dir=DATASET_CACHE,
+        ).flat_tokens
+
+    for prompt in probe_prompts:
+        input_ids = tokenizer.encode(prompt)
+        full = generate_text(
+            model,
+            tokenizer,
+            prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            device="cpu",
+        )
+        print(f"\nPROMPT: {prompt}\n{full}\n{'-'*80}")
+
+        if train_flat is None:
+            continue
+        new_ids = output_ids_of(prompt, tokenizer, model, max_new_tokens)
+        longest = longest_exact_match(new_ids, train_flat)
+        print(f"[memorization] longest verbatim span in training data: {longest} tokens")
+
+
+def output_ids_of(prompt: str, tokenizer, model, max_new_tokens: int):
+    import torch
+
+    input_ids = torch.tensor([tokenizer.encode(prompt)], dtype=torch.long)
+    out = model.generate(input_ids, max_new_tokens=max_new_tokens)
+    return out[0][len(input_ids[0]):].tolist()
+
+
+def longest_exact_match(needle, haystack):
+    import numpy as np
+
+    n = int(len(needle))
+    if n == 0:
+        return 0
+    counts = np.bincount(haystack, minlength=1 if int(haystack.max()) == 0 else int(haystack.max()) + 1)
+    anchor = min(range(n), key=lambda i: int(counts[needle[i]]))
+    anchor_tok = needle[anchor]
+    best = 0
+    for c in np.flatnonzero(haystack == anchor_tok):
+        c = int(c) - anchor
+        if c < 0 or c + n > len(haystack):
+            continue
+        m = 0
+        while m < n and haystack[c + m] == needle[m]:
+            m += 1
+        if m > best:
+            best = m
+            if best == n:
+                break
+    return int(best)
 
 
 @app.local_entrypoint()

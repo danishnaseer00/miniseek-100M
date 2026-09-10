@@ -1,0 +1,1 @@
+{"epoch": 1, "global_step": 19, "train_loss": 10.692595, "val_loss": 10.540197, "perplexity": 37805.0013, "best_val_loss": 10.540197, "checkpoint_dir": "./checkpoints/smoke"}

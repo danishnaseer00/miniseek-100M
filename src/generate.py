@@ -6,12 +6,19 @@ from .model import create_model
 from .tokenizer import Tokenizer
 
 
-def load_model_from_checkpoint(checkpoint_path: str, device: str = "cuda"):
+def load_model_from_checkpoint(
+    checkpoint_path: str,
+    device: str = "cuda",
+    vocab_size: Optional[int] = None,
+):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     config = checkpoint["config"]
-    
+
+    if vocab_size is None:
+        vocab_size = config.get("vocab_size", 50257)
+
     model = create_model({
-        "vocab_size": 50257,
+        "vocab_size": vocab_size,
         "dim": config.get("dim", 512),
         "n_layers": config.get("n_layers", 8),
         "n_heads": config.get("n_heads", 8),
@@ -62,8 +69,8 @@ def interactive_generation(
     device: str = "cuda",
 ):
     print("Loading model...")
-    model, config = load_model_from_checkpoint(checkpoint_path, device)
-    tokenizer = Tokenizer(tokenizer_name, max_length=config.get("max_seq_len", 2048))
+    tokenizer = Tokenizer(tokenizer_name, max_length=2048)
+    model, config = load_model_from_checkpoint(checkpoint_path, device, vocab_size=tokenizer.vocab_size)
     
     print("\nMiniseek Interactive Generation")
     print("Type 'quit' to exit")
