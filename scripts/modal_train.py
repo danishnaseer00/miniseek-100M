@@ -226,6 +226,32 @@ def longest_exact_match(needle, haystack):
     return int(best)
 
 
+@app.function(timeout=1800, memory=8192)
+def ckpt_history():
+    _setup_env()
+
+    import glob
+    import json
+
+    import torch
+
+    def key(path):
+        return int(os.path.basename(path).removeprefix("checkpoint_epoch_").removesuffix(".pt"))
+
+    rows = []
+    for path in sorted(glob.glob(f"{CKPT_DIR}/checkpoint_epoch_*.pt"), key=key):
+        ckpt = torch.load(path, map_location="cpu")
+        rows.append(
+            {
+                "epoch": ckpt.get("epoch"),
+                "global_step": ckpt.get("global_step"),
+                "val_loss": round(float(ckpt.get("val_loss", float("nan"))), 4),
+                "best_val_loss": round(float(ckpt.get("best_val_loss", float("nan"))), 4),
+            }
+        )
+    print("CKPT_HISTORY_JSON:" + json.dumps(rows))
+
+
 @app.local_entrypoint()
 def main(config_name: str = "phase1_debug.yaml", skip_download: bool = False):
     if not skip_download:
