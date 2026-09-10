@@ -8,7 +8,9 @@ model:
   tie_embeddings: true
 
 training:
-  batch_size: 32
+  # batch 32 OOM'd on 24GB A10G (12x704 accumulates ~4x phase-1 activations);
+  # 16 is the largest that fits. Same total token budget either way.
+  batch_size: 16
   num_epochs: 5
   learning_rate: 6e-4
   min_lr: 6e-5

@@ -52,6 +52,7 @@ def _setup_env():
     os.environ.setdefault("HF_HOME", HF_CACHE)
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     sys_path_insert()
 
 
