@@ -8,9 +8,10 @@ model:
   tie_embeddings: true
 
 training:
-  # batch 32 OOM'd on 24GB A10G (12x704 accumulates ~4x phase-1 activations);
-  # 16 is the largest that fits. Same total token budget either way.
-  batch_size: 16
+  # batch 32 OOM'd on 24GB A10G (12x704 accumulates ~4x phase-1 activations).
+  # batch 16 also teeters ~1% over (peak = 21GB acts + 3.3GB fp32 logits cast
+  # inside cross_entropy). 8 is the safe size; same token budget either way.
+  batch_size: 8
   num_epochs: 5
   learning_rate: 6e-4
   min_lr: 6e-5
@@ -22,7 +23,7 @@ training:
   num_workers: 0
 
   save_every: 1
-  save_every_steps: 500
+  save_every_steps: 2000
   budget_check_every: 25
   checkpoint_dir: "./checkpoints/phase2_100m"
   log_dir: "./logs/phase2_100m"
