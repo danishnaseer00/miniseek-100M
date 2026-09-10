@@ -154,6 +154,10 @@ class Trainer:
         self.val_loader = mk_loader("validation", shuffle=False)
 
         self.steps_per_epoch = max(1, len(self.train_loader))
+        self.grad_accum_steps = max(1, int(cfg.get("grad_accum_steps", 1) or 1))
+        self.steps_per_epoch = max(
+            1, math.ceil(len(self.train_loader) / self.grad_accum_steps)
+        )
         total_steps = self.steps_per_epoch * cfg.get("num_epochs", 10)
         lr = cfg.get("learning_rate", 3e-4)
         eta_min = cfg.get("min_lr", lr * 0.1)
@@ -357,26 +361,37 @@ class Trainer:
         latest_path = os.path.join(checkpoint_dir, "latest.pt")
 
         pbar = tqdm(
-            self.train_loader,
             desc=f"Epoch {epoch}",
-            initial=resume_step,
             total=self.steps_per_epoch,
+            initial=resume_step // self.grad_accum_steps,
         )
-        for batch_idx, batch in enumerate(pbar):
+        for batch_idx, batch in enumerate(self.train_loader):
             if batch_idx < resume_step:
                 continue
+
+            is_boundary = (batch_idx + 1) % self.grad_accum_steps == 0 or batch_idx == len(
+                self.train_loader
+            ) - 1
+
+            if batch_idx % self.grad_accum_steps == 0:
+                self.optimizer.zero_grad()
 
             step_t0 = time.monotonic()
             input_ids = batch["input_ids"].to(self.device)
             targets = batch["targets"].to(self.device)
 
-            self.optimizer.zero_grad()
-
             with autocast(enabled=self.use_amp):
                 outputs = self.model(input_ids, targets)
-                loss = outputs["loss"]
+                loss = outputs["loss"] / self.grad_accum_steps
 
             self.scaler.scale(loss).backward()
+
+            total_loss += outputs["loss"].item()
+            n += 1
+            self._run_gpu_seconds += time.monotonic() - step_t0
+
+            if not is_boundary:
+                continue
 
             if self.config.get("grad_clip", 0.0) > 0:
                 self.scaler.unscale_(self.optimizer)
@@ -389,16 +404,13 @@ class Trainer:
             self.scaler.update()
             self.scheduler.step()
 
-            total_loss += loss.item()
-            n += 1
             self.global_step += 1
-            self._run_gpu_seconds += time.monotonic() - step_t0
-
-            pbar.set_postfix({"loss": loss.item(), "lr": self.scheduler.get_last_lr()[0]})
+            pbar.update(1)
+            pbar.set_postfix({"loss": total_loss / max(1, n), "lr": self.scheduler.get_last_lr()[0]})
 
             if self.wandb is not None:
                 self.wandb.log({
-                    "train/loss": loss.item(),
+                    "train/loss": total_loss / max(1, n),
                     "train/lr": self.scheduler.get_last_lr()[0],
                     "train/step": self.global_step,
                 })

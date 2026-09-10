@@ -8,10 +8,11 @@ model:
   tie_embeddings: true
 
 training:
-  # batch 32 OOM'd on 24GB A10G (12x704 accumulates ~4x phase-1 activations).
-  # batch 16 also teeters ~1% over (peak = 21GB acts + 3.3GB fp32 logits cast
-  # inside cross_entropy). 8 is the safe size; same token budget either way.
+  # Peak memory on 24GB A10G forced batch 8 (batch 32 OOM'd, batch 16 teetered
+  # ~1% over with the fp32 logits cast). grad_accum_steps 4 → effective batch 32:
+  # same smooth, low-noise gradient, only 8 windows in VRAM at once.
   batch_size: 8
+  grad_accum_steps: 4
   num_epochs: 5
   learning_rate: 6e-4
   min_lr: 6e-5

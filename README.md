@@ -154,10 +154,16 @@ Phase 4: Final Miniseek (100–150M)
 
 ## Phase 2: Dense control (101.4M)
 
-Same data, same token budget as Phase 1 — but batch 32 and 101.4M params so loss
-can fall below Phase 1's 3.66. Config: `configs/phase2_100m.yaml`
+Same data, same token budget as Phase 1 — but a 101.4M dense model so loss can
+fall below Phase 1's 3.66. Config: `configs/phase2_100m.yaml`
 (d=704, 12 layers, 8 heads, SwiGLU 1664, tied embeddings → 101.36M params,
 verified by `expected_params_million: 101.36`).
+
+Activations at `batch 32 × seq 1024 × d704 × 12 layers` OOM a 24GB A10G (batch 16
+teeters ~1% over because `cross_entropy` materializes an fp32 copy of the 50K
+logits). The config therefore trains at **batch 8 × grad_accum_steps 4** = an
+effective **batch-32 gradient** (verified byte-for-byte equivalent to a real
+batch-32 step) while only holding 8 windows in VRAM — no GPU change needed.
 
 ### Budget-aware training (cap = $24)
 
