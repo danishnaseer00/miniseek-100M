@@ -8,12 +8,10 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
-import yaml
 
 from .model import create_model
 from .tokenizer import Tokenizer
@@ -101,7 +99,8 @@ class Trainer:
             raise ValueError(f"Unsupported device: {self.device}")
 
         self.use_amp = cfg.get("mixed_precision", True) and self.device == "cuda"
-        print(f"Device: {self.device} | Mixed precision: {self.use_amp}")
+        self.reset_optimizer = bool(cfg.get("reset_optimizer", False))
+        print(f"Device: {self.device} | Mixed precision: {self.use_amp} | Reset optimizer: {self.reset_optimizer}")
 
         self.tokenizer = Tokenizer(
             tokenizer_name=cfg.get("tokenizer", "gpt2"),
@@ -130,13 +129,6 @@ class Trainer:
                 "Fix the config before training."
             )
 
-        self.optimizer = AdamW(
-            self.model.parameters(),
-            lr=cfg.get("learning_rate", 3e-4),
-            weight_decay=cfg.get("weight_decay", 0.01),
-            betas=(0.9, 0.95),
-        )
-
         num_workers = cfg.get("num_workers", 0 if self.device == "cpu" else 4)
         mk_loader = lambda split, shuffle: create_dataloader(
             tokenizer=self.tokenizer,
@@ -148,6 +140,7 @@ class Trainer:
             cache_dir=cfg.get("cache_dir", "./data"),
             max_docs=cfg.get("max_docs"),
             dataset=cfg.get("dataset", "wikitext-103-raw-v1"),
+            corpus_dir=cfg.get("corpus_dir"),
         )
 
         self.train_loader = mk_loader("train", shuffle=True)
@@ -158,38 +151,8 @@ class Trainer:
         self.steps_per_epoch = max(
             1, math.ceil(len(self.train_loader) / self.grad_accum_steps)
         )
-        total_steps = self.steps_per_epoch * cfg.get("num_epochs", 10)
-        lr = cfg.get("learning_rate", 3e-4)
-        eta_min = cfg.get("min_lr", lr * 0.1)
-
-        warmup_steps = int(cfg.get("warmup_steps", 0))
-        warmup_steps = max(0, min(warmup_steps, total_steps - 1))
-
-        if warmup_steps > 0:
-            self.warmup_steps = warmup_steps
-            warmup = LinearLR(
-                self.optimizer,
-                start_factor=1e-3,
-                end_factor=1.0,
-                total_iters=warmup_steps,
-            )
-            cosine = CosineAnnealingLR(
-                self.optimizer,
-                T_max=max(1, total_steps - warmup_steps),
-                eta_min=eta_min,
-            )
-            self.scheduler = SequentialLR(
-                self.optimizer,
-                schedulers=[warmup, cosine],
-                milestones=[warmup_steps],
-            )
-        else:
-            self.warmup_steps = 0
-            self.scheduler = CosineAnnealingLR(
-                self.optimizer,
-                T_max=total_steps,
-                eta_min=eta_min,
-            )
+        self._init_optimizer()
+        self._init_scheduler()
 
         self.scaler = GradScaler(enabled=self.use_amp)
 
@@ -271,47 +234,115 @@ class Trainer:
         }, path)
         print(f"Checkpoint saved to {path}")
 
+    def _init_optimizer(self):
+        self.optimizer = AdamW(
+            self.model.parameters(),
+            lr=self.config.get("learning_rate", 3e-4),
+            weight_decay=self.config.get("weight_decay", 0.01),
+            betas=(0.9, 0.95),
+        )
+
+    def _init_scheduler(self):
+        start_epoch = int(getattr(self, "start_epoch", 1))
+        num_epochs = int(self.config.get("num_epochs", 10))
+        remaining = max(1, num_epochs - start_epoch + 1)
+        total_steps = self.steps_per_epoch * remaining
+        lr = self.config.get("learning_rate", 3e-4)
+        eta_min = self.config.get("min_lr", lr * 0.1)
+        warmup_steps = int(self.config.get("warmup_steps", 0))
+        warmup_steps = max(0, min(warmup_steps, total_steps - 1))
+
+        if warmup_steps > 0:
+            self.warmup_steps = warmup_steps
+            initial_lr = self.config.get("initial_lr")
+            start_factor = max(1e-6, min(1.0, initial_lr / lr)) if initial_lr else 1e-3
+            warmup = LinearLR(
+                self.optimizer,
+                start_factor=start_factor,
+                end_factor=1.0,
+                total_iters=warmup_steps,
+            )
+            cosine = CosineAnnealingLR(
+                self.optimizer,
+                T_max=max(1, total_steps - warmup_steps),
+                eta_min=eta_min,
+            )
+            self.scheduler = SequentialLR(
+                self.optimizer,
+                schedulers=[warmup, cosine],
+                milestones=[warmup_steps],
+            )
+        else:
+            self.warmup_steps = 0
+            self.scheduler = CosineAnnealingLR(
+                self.optimizer,
+                T_max=total_steps,
+                eta_min=eta_min,
+            )
+
     def load_checkpoint(self, path: str):
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        if "scaler_state_dict" in checkpoint and checkpoint["scaler_state_dict"]:
-            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
+        if not self.reset_optimizer:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            if "scaler_state_dict" in checkpoint and checkpoint["scaler_state_dict"]:
+                self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
         rng = checkpoint.get("rng", {})
-        if "torch_rng_state" in rng:
-            torch.set_rng_state(rng["torch_rng_state"])
-        if "random_state" in rng:
-            random.setstate(rng["random_state"])
-        if "numpy_random_state" in rng:
-            np.random.set_state(rng["numpy_random_state"])
-        if "torch_cuda_rng_state" in rng and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(rng["torch_cuda_rng_state"])
+        try:
+            if "torch_rng_state" in rng:
+                torch.set_rng_state(rng["torch_rng_state"])
+            if "random_state" in rng:
+                random.setstate(rng["random_state"])
+            if "numpy_random_state" in rng:
+                np.random.set_state(rng["numpy_random_state"])
+            if "torch_cuda_rng_state" in rng and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all(rng["torch_cuda_rng_state"])
+        except (TypeError, ValueError, RuntimeError) as e:
+            print(f"WARNING: could not restore RNG state from checkpoint ({e}); proceeding with fresh RNG.")
 
-        self.global_step = checkpoint.get("global_step", 0)
-        self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
-
-        epoch = checkpoint.get("epoch", 1)
-        in_progress = checkpoint.get("epoch_in_progress")
-        step_in_epoch = checkpoint.get("step_in_epoch") or 0
-        if in_progress is not None:
-            self.start_epoch = int(in_progress)
-            self.resume_step = int(step_in_epoch)
+        if self.reset_optimizer:
+            self.global_step = 0
+            override = self.config.get("start_epoch")
+            if override is not None:
+                self.start_epoch = int(override)
+                self.resume_step = 0
+                print(
+                    f"reset_optimizer: fresh optimizer+scheduler; forced start_epoch={self.start_epoch}, step 0"
+                )
+            else:
+                self.start_epoch = 1
+                self.resume_step = 0
+                print("reset_optimizer: fresh optimizer+scheduler at low LR; counters reset to epoch 1, step 0")
+            self.best_val_loss = float("inf")
+            self._init_optimizer()
+            self._init_scheduler()
         else:
-            self.start_epoch = int(epoch) + 1
-            self.resume_step = 0
+            self.global_step = checkpoint.get("global_step", 0)
+            self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
 
-        ckpt_steps = checkpoint.get("steps_per_epoch")
-        if ckpt_steps and ckpt_steps != self.steps_per_epoch:
+            epoch = checkpoint.get("epoch", 1)
+            in_progress = checkpoint.get("epoch_in_progress")
+            step_in_epoch = checkpoint.get("step_in_epoch") or 0
+            if in_progress is not None:
+                self.start_epoch = int(in_progress)
+                self.resume_step = int(step_in_epoch)
+            else:
+                self.start_epoch = int(epoch) + 1
+                self.resume_step = 0
+
+            ckpt_steps = checkpoint.get("steps_per_epoch")
+            if ckpt_steps and ckpt_steps != self.steps_per_epoch:
+                print(
+                    f"WARNING: checkpoint steps/epoch={ckpt_steps} != current {self.steps_per_epoch}; "
+                    "cosine schedule may misalign."
+                )
             print(
-                f"WARNING: checkpoint steps/epoch={ckpt_steps} != current {self.steps_per_epoch}; "
-                "cosine schedule may misalign."
+                f"Checkpoint loaded from {path}: resume epoch {self.start_epoch} at step "
+                f"{self.resume_step}/{self.steps_per_epoch}, global step {self.global_step}"
             )
-        print(
-            f"Checkpoint loaded from {path}: resume epoch {self.start_epoch} at step "
-            f"{self.resume_step}/{self.steps_per_epoch}, global step {self.global_step}"
-        )
 
     # ------------------------------------------------------------------ logging / ledger
     def _write_log(self, record: Dict[str, Any]):
@@ -551,11 +582,3 @@ class Trainer:
             )
         else:
             print("Training complete!")
-
-
-def train_from_config(config_path: str):
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-
-    trainer = Trainer(config)
-    trainer.train()

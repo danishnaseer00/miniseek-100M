@@ -1,0 +1,1 @@
+{"epoch": 1, "global_step": 30461, "train_loss": 3.811602, "val_loss": 3.784951, "perplexity": 44.0335, "best_val_loss": 3.784951, "cost_usd_total": 27.63014, "gpu_seconds_total": 49734.2, "checkpoint_dir": "/data/checkpoints/phase3_seg1"}

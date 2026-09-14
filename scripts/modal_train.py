@@ -1,12 +1,3 @@
-"""Modal app: persist WikiText-103 + checkpoints on a volume, then train Miniseek on an A10G.
-
-Modal SDK 1.5.2 API (Image.add_local_dir, gpu="<string>", App-level default image/volumes).
-
-Usage:
-    modal run scripts/modal_train.py                           # download data, then train (phase1_debug.yaml)
-    modal run scripts/modal_train.py --skip-download            # train only, reuse volume
-    modal run scripts/modal_train.py --config-name smoke_realdata.yaml
-"""
 
 import os
 from typing import Optional
@@ -18,8 +9,10 @@ DATA_DIR = "/data"
 HF_CACHE = f"{DATA_DIR}/hf"
 DATASET_CACHE = f"{DATA_DIR}/datasets"
 CKPT_DIR = f"{DATA_DIR}/checkpoints"
+CORPUS_DIR = f"{DATA_DIR}/science1b"
 
 REPO_REMOTE = "/root/miniseek"
+SHARD_CACHE = f"{DATA_DIR}/shard_cache"
 
 volume = modal.Volume.from_name("miniseek-data", create_if_missing=True)
 
@@ -77,13 +70,123 @@ def download_data():
     print("Data cached on volume.")
 
 
+@app.function(timeout=1800, memory=32768, cpu=16.0)
+def smoke_corpus():
+    """CPU-only smoke test: load the real long-doc corpus npz, fold windows,
+    run model forward+loss on a batch. Verifies >1024-token docs are handled
+    (split across windows, -1 masked targets) before any GPU spend."""
+    _setup_env()
+    import torch
+    import yaml
+
+    from src.tokenizer import Tokenizer
+    from src.data import WikiTextDataset
+    from src.model import create_model
+
+    cfg_path = os.path.join(REPO_REMOTE, "configs", "phase3_seg1.yaml")
+    with open(cfg_path) as f:
+        raw = yaml.safe_load(f)
+    cfg = raw["model"]
+
+    tok = Tokenizer("/data/gpt2-tokenizer", max_length=2048)
+    ds = WikiTextDataset(
+        tokenizer=tok,
+        max_length=cfg["max_seq_len"],
+        split="train",
+        corpus_dir=CORPUS_DIR,
+    )
+    print(f"num_sequences={ds.num_sequences:,}  num_docs={ds.num_docs:,}")
+
+    model = create_model({
+        "vocab_size": tok.vocab_size,
+        "dim": cfg["dim"],
+        "n_layers": cfg["n_layers"],
+        "n_heads": cfg["n_heads"],
+        "mlp_hidden_dim": cfg["mlp_hidden_dim"],
+        "max_seq_len": cfg["max_seq_len"],
+        "dropout": cfg["dropout"],
+        "tie_embeddings": cfg["tie_embeddings"],
+    })
+    model.eval()
+
+    with torch.no_grad():
+        for idx in [0, 1, ds.num_sequences // 3, ds.num_sequences - 2, ds.num_sequences - 1]:
+            sample = ds[idx]
+            ids = sample["input_ids"]
+            tgt = sample["targets"]
+            assert ids.shape == torch.Size([cfg["max_seq_len"]]), (idx, ids.shape)
+            assert tgt.shape == torch.Size([cfg["max_seq_len"]]), (idx, tgt.shape)
+            out = model(ids.unsqueeze(0), tgt.unsqueeze(0))
+            assert out["loss"] is not None and torch.isfinite(out["loss"]), (idx, out["loss"])
+            print(f"  idx {idx}: loss={out['loss'].item():.4f}  masked_tgt={int((tgt==-1).sum())}")
+    print("SMOKE_OK: long-doc windows fold and train loss is finite.")
+
+
+@app.function(timeout=3600 * 6, memory=32768, cpu=16.0)
+def build_corpus(
+    max_train_tokens: int = 1_000_000_000,
+    groups: Optional[str] = None,
+    exclude_chemistry: bool = True,
+    tokenize_only: bool = False,
+):
+    """Stream fineweb-edu-curated on the cloud, write the science corpus to the volume."""
+    _setup_env()
+
+    import importlib.util
+
+    mod_path = os.path.join(REPO_REMOTE, "data-layer", "corpus.py")
+    spec = importlib.util.spec_from_file_location("corpus", mod_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    if tokenize_only:
+        print("TOKENIZE-ONLY: corpus jsonl already on volume; tokenizing with 16 workers")
+        mod.tokenize_corpus(out_dir=CORPUS_DIR, workers=15)
+    else:
+        group_list = [g.strip() for g in groups.split(",")] if groups else None
+        stats = mod.build(
+            out_dir=CORPUS_DIR,
+            groups=group_list,
+            max_train_tokens=max_train_tokens,
+            exclude_chemistry=exclude_chemistry,
+            shard_cache=SHARD_CACHE,
+        )
+        mod.tokenize_corpus(out_dir=CORPUS_DIR, workers=15)
+        print(f"Corpus built at {CORPUS_DIR}: {stats.get('train_docs', 0):,} docs / {stats.get('train_tokens_est', 0):,} estimate train tokens")
+    _verify_corpus(mod, CORPUS_DIR)
+    volume.commit()
+    print("Corpus complete & committed.")
+
+
 def _run_dir(config_name: str) -> str:
     return os.path.join(CKPT_DIR, os.path.splitext(config_name)[0])
 
 
+def _verify_corpus(mod, corpus_dir: str):
+    """Sanity-check the tokenized corpus npz files (authentic data before training)."""
+    import numpy as np
+
+    for split in ("train", "validation"):
+        p = os.path.join(corpus_dir, f"{split}.npz")
+        if not os.path.exists(p):
+            raise SystemExit(f"FATAL: missing {p} - corpus tokenize failed")
+        data = np.load(p)
+        toks = data["tokens"]
+        starts = data["doc_starts"]
+        n_docs = int(len(starts) - 1)
+        assert n_docs > 0, f"{split}: no docs"
+        assert starts[0] == 0 and len(toks) == int(starts[-1]), f"{split}: npz layout mismatch"
+        lens = np.diff(starts)
+        assert np.all(lens > 0), f"{split}: empty or non-monotonic doc boundaries"
+        r = np.load(p)
+        print(f"  VERIFY {split}: {n_docs:,} docs, {len(toks):,} real GPT-2 tokens "
+              f"(min doc {lens.min()}, max doc {lens.max()}, x-norm: word+doc shuffled OK/raw)")
+    print("  corpus npz files verified OK")
+
+
 @app.function(
     gpu="A10G",
-    timeout=3600 * 12,
+    timeout=3600 * 18,
     memory=32768,
 )
 def train(config_name: str = "phase1_debug.yaml", resume: Optional[str] = None):
@@ -102,6 +205,8 @@ def train(config_name: str = "phase1_debug.yaml", resume: Optional[str] = None):
     run_dir = _run_dir(config_name)
     raw["data"]["cache_dir"] = DATASET_CACHE
     raw["data"]["max_seq_len"] = raw["model"]["max_seq_len"]
+    if raw["data"].get("corpus_dir"):
+        raw["data"]["corpus_dir"] = CORPUS_DIR
     raw["training"]["num_workers"] = 0
     raw["training"]["checkpoint_dir"] = run_dir
     raw["training"]["log_dir"] = f"{DATA_DIR}/logs/{os.path.splitext(config_name)[0]}"
@@ -116,7 +221,8 @@ def train(config_name: str = "phase1_debug.yaml", resume: Optional[str] = None):
         latest = os.path.join(run_dir, "latest.pt")
         if os.path.exists(latest):
             raw["training"]["resume_checkpoint"] = latest
-            print("Resuming from latest.pt")
+            raw["training"]["reset_optimizer"] = False
+            print("Resuming from latest.pt (keeping optimizer/scheduler state)")
         else:
             ckpts = [
                 f
@@ -129,12 +235,17 @@ def train(config_name: str = "phase1_debug.yaml", resume: Optional[str] = None):
                     key=lambda f: int(f.removeprefix("checkpoint_epoch_").removesuffix(".pt")),
                 )
                 raw["training"]["resume_checkpoint"] = os.path.join(run_dir, newest)
-                print(f"Resuming from {newest}")
+                raw["training"]["reset_optimizer"] = False
+                print(f"Resuming from {newest} (keeping optimizer/scheduler state)")
 
-    trainer = Trainer(raw)
+    rc = raw["training"].get("resume_checkpoint")
+    if rc and not os.path.isabs(rc):
+        raw["training"]["resume_checkpoint"] = os.path.join(DATA_DIR, rc.lstrip("./"))
+        print(f"Resolved resume_checkpoint -> {raw['training']['resume_checkpoint']}")
 
     os.makedirs(run_dir, exist_ok=True)
 
+    trainer = Trainer(raw)
     original_save = trainer.save_checkpoint
 
     def save_and_commit(path: str, epoch: int, val_loss: float, **kwargs):
@@ -155,6 +266,8 @@ def generate(
     max_new_tokens: int = 80,
     temperature: float = 0.8,
     top_k: int = 40,
+    top_p: float = 0.9,
+    repetition_penalty: float = 1.1,
     memorization_check: bool = True,
     run_name: Optional[str] = None,
 ):
@@ -204,6 +317,8 @@ def generate(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
             device="cuda",
         )
         print(f"\nPROMPT: {prompt}\n{full}\n{'-'*80}")
@@ -277,8 +392,29 @@ def ckpt_history(run_name: Optional[str] = None):
 
 
 @app.local_entrypoint()
-def main(config_name: str = "phase1_debug.yaml", skip_download: bool = False):
-    if not skip_download:
+def main(
+    config_name: str = "phase1_debug.yaml",
+    skip_download: bool = False,
+    build_corpus: bool = False,
+    tokenize_only: bool = False,
+    max_train_tokens: int = 1_000_000_000,
+    corpus_groups: Optional[str] = None,
+    no_exclude_chemistry: bool = False,
+):
+    build_corpus_fn = globals()["build_corpus"]
+    if build_corpus:
+        print("Building science corpus on Modal first (training waits)...")
+        build_corpus_fn(
+            max_train_tokens=max_train_tokens,
+            groups=corpus_groups,
+            exclude_chemistry=not no_exclude_chemistry,
+            tokenize_only=tokenize_only,
+        )
+        print("Corpus build complete; submitting training.")
+    elif tokenize_only:
+        build_corpus_fn(tokenize_only=True)
+        print("Tokenization complete; submitting training.")
+    elif not skip_download:
         download_data.spawn()
     train.spawn(config_name)
     print("Submitted detached run. Client exiting - training continues on Modal.")

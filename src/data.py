@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Optional, Dict, List
 
@@ -16,18 +17,25 @@ class WikiTextDataset(Dataset):
         cache_dir: Optional[str] = "./data",
         max_docs: Optional[int] = None,
         dataset: str = "wikitext-103-raw-v1",
+        corpus_dir: Optional[str] = None,
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.split = split
         self.dataset = dataset
+        self.corpus_dir = corpus_dir
 
         tok_name = getattr(tokenizer, "name", "tok")
-        cache_prefix = "wikitext103" if dataset == "wikitext-103-raw-v1" else dataset.replace("/", "_")
-        os.makedirs(cache_dir, exist_ok=True)
-        self.cache_path = os.path.join(
-            cache_dir, f"{cache_prefix}_{split}_{tok_name}_{max_length}.npz"
-        )
+
+        if corpus_dir:
+            os.makedirs(corpus_dir, exist_ok=True)
+            self.cache_path = os.path.join(corpus_dir, f"{split}.npz")
+        else:
+            os.makedirs(cache_dir, exist_ok=True)
+            cache_prefix = "wikitext103" if dataset == "wikitext-103-raw-v1" else dataset.replace("/", "_")
+            self.cache_path = os.path.join(
+                cache_dir, f"{cache_prefix}_{split}_{tok_name}_{max_length}.npz"
+            )
 
         self.flat_tokens, self.doc_starts = self._load_or_tokenize(cache_dir, tok_name, max_docs)
 
@@ -47,13 +55,24 @@ class WikiTextDataset(Dataset):
             data = np.load(self.cache_path)
             return data["tokens"], data["doc_starts"]
 
-        print(f"Loading WikiText-103 {self.split} split...")
-        dataset = load_dataset("wikitext", self.dataset, split=self.split, cache_dir=cache_dir)
+        if self.corpus_dir:
+            jsonl_path = os.path.join(self.corpus_dir, f"{self.split}.jsonl")
+            print(f"Loading local corpus: {jsonl_path}")
+            docs: List[str] = []
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    docs.append(json.loads(line)["text"])
+        else:
+            print(f"Loading WikiText-103 {self.split} split...")
+            dataset = load_dataset("wikitext", self.dataset, split=self.split, cache_dir=cache_dir)
+            docs = dataset["text"]
 
         pieces: List[np.ndarray] = []
         lens: List[int] = []
-        for text in dataset["text"]:
-            if not text.strip():
+        for text in docs:
+            if not text or not text.strip():
                 continue
             tokens = self.tokenizer.encode(text, add_special_tokens=True)
             if len(tokens) <= 1:
@@ -141,6 +160,7 @@ def create_dataloader(
     cache_dir: Optional[str] = "./data",
     max_docs: Optional[int] = None,
     dataset: str = "wikitext-103-raw-v1",
+    corpus_dir: Optional[str] = None,
 ) -> DataLoader:
     dataset_obj = WikiTextDataset(
         tokenizer=tokenizer,
@@ -149,6 +169,7 @@ def create_dataloader(
         cache_dir=cache_dir,
         max_docs=max_docs,
         dataset=dataset,
+        corpus_dir=corpus_dir,
     )
 
     return DataLoader(

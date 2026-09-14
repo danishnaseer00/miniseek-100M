@@ -109,18 +109,45 @@ class MiniseekDecoder(nn.Module):
         return {"logits": logits, "loss": loss}
     
     @torch.no_grad()
-    def generate(self, input_ids, max_new_tokens: int = 100, temperature: float = 1.0, top_k: Optional[int] = None):
+    def generate(
+        self,
+        input_ids,
+        max_new_tokens: int = 100,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repetition_penalty: float = 1.0,
+    ):
         for _ in range(max_new_tokens):
             input_ids_cond = input_ids if input_ids.size(1) <= self.max_seq_len else input_ids[:, -self.max_seq_len:]
             
             outputs = self.forward(input_ids_cond)
             logits = outputs["logits"]
             
+            seen = set(input_ids_cond[0].tolist())
+            if seen and repetition_penalty != 1.0:
+                seen_logits = logits[0, -1, list(seen)]
+                logits[0, -1, list(seen)] = torch.where(
+                    seen_logits >= 0,
+                    seen_logits / repetition_penalty,
+                    seen_logits * repetition_penalty,
+                )
+            
             logits = logits[:, -1, :] / temperature
             
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = float("-inf")
+            
+            if top_p is not None:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+                sorted_probs = nn.functional.softmax(sorted_logits, dim=-1)
+                cumulative = torch.cumsum(sorted_probs, dim=-1)
+                mask = cumulative - sorted_probs > top_p
+                sorted_logits[mask] = float("-inf")
+                logits = torch.zeros_like(logits).scatter_(
+                    -1, sorted_indices, sorted_logits
+                )
             
             probs = nn.functional.softmax(logits, dim=-1)
             

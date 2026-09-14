@@ -1,0 +1,53 @@
+model:
+
+  dim: 704
+  n_layers: 12
+  n_heads: 8
+  mlp_hidden_dim: 1664
+  max_seq_len: 1024
+  dropout: 0.1
+  tie_embeddings: true
+
+training:
+
+  resume_checkpoint: "./checkpoints/phase2_100m/best_model.pt"
+  reset_optimizer: true
+
+  batch_size: 8
+  grad_accum_steps: 4
+  num_epochs: 2
+
+  learning_rate: 6e-6
+  min_lr: 6e-7
+  weight_decay: 0.01
+  grad_clip: 1.0
+  warmup_steps: 100
+
+  mixed_precision: true
+  num_workers: 0
+
+  save_every: 1
+  save_every_steps: 2000
+  budget_check_every: 25
+  checkpoint_dir: "./checkpoints/phase3_seg1"
+  log_dir: "./logs/phase3_seg1"
+
+  budget_usd: 30.0
+  usd_per_hour: 2.0
+  allow_over_budget: false
+
+data:
+
+  dataset: "fineweb-science"
+  corpus_dir: "./data/science1b"
+  tokenizer: "gpt2"
+  cache_dir: "./data"
+
+wandb:
+  use_wandb: false
+  wandb_project: "miniseek-phase3"
+  wandb_entity: null
+
+device: "auto"
+
+expected_params_million: 101.36
