@@ -1,95 +1,27 @@
 import argparse
-import hashlib
 import json
 import os
 import sys
 import time
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.abspath(os.path.join(_HERE, ".."))):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-from huggingface_hub import list_repo_files, hf_hub_download 
-from datasets import load_dataset 
+from datasets import load_dataset
 
-DATASET = "mdonigian/fineweb-edu-curated"
+from filters import (_doc_hash, _norm_groups, _marker_hits)
+from manifest import _load_manifest, _new_manifest, _save_manifest
+from shards import DATASET, _list_shards, _download_shard
+from tokenization import tokenize_corpus
+
 DEFAULT_GROUPS = [
     "life_sciences",
     "physical_sciences",
     "mathematics",
     "environmental",
 ]
-
-CHEM_MARKERS = [
-    "stoichiometry",
-    "molar mass",
-    "chemical formula",
-    "chemical equation",
-    "periodic table",
-    "electronegativity",
-    "oxidation number",
-    "titration",
-    "molarity",
-    "mole ratio",
-    "hydrochloric acid",
-    "sulfuric acid",
-    "sodium chloride",
-    "valence electron",
-]
-
-
-def _norm_groups(raw):
-    if raw is None:
-        return []
-    if isinstance(raw, str):
-        return [g.strip() for g in raw.split(",") if g.strip()]
-    return [g for g in raw if g]
-
-
-def _doc_hash(value: str) -> int:
-    return int.from_bytes(hashlib.sha256(value.encode("utf-8")).digest()[:8], "big")
-
-
-def _marker_hits(text: str) -> int:
-    low = text.lower()
-    hits = 0
-    for m in CHEM_MARKERS:
-        if m in low:
-            hits += 1
-    return hits
-
-
-def _list_shards(dataset: str) -> list:
-    files = list_repo_files(dataset, repo_type="dataset")
-    return sorted(f for f in files if f.endswith(".parquet"))
-
-
-def _download_shard(shard: str, dataset: str, shard_cache: str) -> str:
-    """Download one parquet shard into the shard cache (resumable)."""
-    local = hf_hub_download(
-        dataset,
-        filename=shard,
-        repo_type="dataset",
-        cache_dir=shard_cache,
-    )
-    print(f"  shard ready: {local}")
-    return local
-
-
-def _manifest_path(out_dir: str) -> str:
-    return os.path.join(out_dir, "manifest.json")
-
-
-def _load_manifest(out_dir: str) -> dict:
-    p = _manifest_path(out_dir)
-    if os.path.exists(p):
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"shards_done": [], "train_tokens_est": 0, "train_docs": 0,
-            "val_tokens_est": 0, "val_docs": 0, "group_hits": {}, "chem_dropped": 0}
-
-
-def _save_manifest(out_dir: str, man: dict):
-    with open(_manifest_path(out_dir), "w", encoding="utf-8") as f:
-        json.dump(man, f, indent=2)
 
 
 def build(
@@ -113,9 +45,7 @@ def build(
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(shard_cache, exist_ok=True)
 
-    man = _load_manifest(out_dir) if resume else {
-        "shards_done": [], "train_tokens_est": 0, "train_docs": 0,
-        "val_tokens_est": 0, "val_docs": 0, "group_hits": {}, "chem_dropped": 0}
+    man = _load_manifest(out_dir) if resume else _new_manifest()
     done_flag = os.path.join(out_dir, "done.flag")
 
     if resume and man.get("train_tokens_est", 0) >= max_train_tokens:
@@ -269,118 +199,8 @@ def build(
     return man
 
 
-def encode_range(args):
-    """Process-pool worker: read one byte-range chunk and tokenize each doc line."""
-    import numpy as np
-    from src.tokenizer import Tokenizer
-
-    path, start_byte, end_byte, tokenizer_name, max_length = args
-    tokenizer = Tokenizer(tokenizer_name, max_length=max_length)
-    pieces = []
-    lens = []
-    with open(path, "rb") as f:
-        f.seek(start_byte)
-        data = f.read(end_byte - start_byte)
-    for line in data.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            text = json.loads(line.decode("utf-8", errors="replace")).get("text")
-        except Exception:
-            continue
-        if not text or not text.strip():
-            continue
-        toks = tokenizer.encode(text, add_special_tokens=True, truncate=False)
-        if len(toks) <= 1:
-            continue
-        pieces.append(np.asarray(toks, dtype=np.int32))
-        lens.append(len(toks))
-    return (pieces, lens)
-
-
-def tokenize_corpus(out_dir: str = "./data/science1b", tokenizer_name: str = "/data/gpt2-tokenizer",
-                    max_length: int = 1024, workers: int = 16):
-    """Produce train.npz / validation.npz (same layout as src.data.WikiTextDataset).
-
-    Workers read the source file by BYTE RANGE — the parent only passes a small
-    (path, start, end, tokenizer_name, max_length) tuple per chunk, never the
-    full line strings. This keeps parent RAM under ~2 GB regardless of corpus size.
-    Tokenizer is loaded from a LOCAL directory on the volume so workers make zero
-    huggingface.co calls and cannot hit HTTP 429 rate limits.
-
-    encode_range lives in this same module so multiprocessing.Pool can pickle it.
-    """
-    import numpy as np
-    from multiprocessing import Pool
-
-    CHUNK_BYTES = 256 * 1024 * 1024  # ~256 MB per worker task
-
-    for split in ("train", "validation"):
-        src = os.path.join(out_dir, f"{split}.jsonl")
-        out = os.path.join(out_dir, f"{split}.npz")
-        if not os.path.exists(src):
-            print(f"SKIP {split}: no {src}")
-            continue
-
-        # Build byte-offset index: cumulative byte position after each line
-        print(f"building byte index for {split}...")
-        offsets = []
-        with open(src, "rb") as f:
-            offsets.append(f.tell())
-            for line in f:
-                if not line.endswith(b"\n"):
-                    break
-                offsets.append(f.tell())
-        total_bytes = offsets[-1] if offsets else 0
-        print(f"{split}: {len(offsets)-1:,} docs, {total_bytes/1e9:.2f} GB")
-
-        # Chunk by byte ranges so each worker reads a contiguous ~256 MB slice
-        chunks = []
-        i = 0
-        while i < len(offsets) - 1:
-            chunk_start = offsets[i]
-            j = i + 1
-            while j < len(offsets) and offsets[j] - chunk_start < CHUNK_BYTES:
-                j += 1
-            chunks.append((src, chunk_start, offsets[j - 1] if j < len(offsets) else total_bytes,
-                           tokenizer_name, max_length))
-            i = j
-        print(f"split into {len(chunks)} chunks (~{CHUNK_BYTES/1e6:.0f} MB each), tokenizing with {workers} workers...")
-
-        pieces = []
-        lens = []
-        with Pool(workers) as pool:
-            for chunk_pieces, chunk_lens in pool.imap(encode_range, chunks):
-                pieces.extend(chunk_pieces)
-                lens.extend(chunk_lens)
-
-        flat = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.int32)
-        doc_starts = np.cumsum(np.concatenate([[0], np.asarray(lens, dtype=np.int64)])) if lens else np.zeros(1, dtype=np.int64)
-        np.savez(out, tokens=flat, doc_starts=doc_starts)
-        print(f"Wrote {out}: {len(pieces):,} docs, {len(flat):,} real GPT-2 tokens")
-    return True
-
-
-def enumerate_labels(dataset=DATASET, shard_cache="./data/shard_cache", max_rows=20000):
-    shard = _list_shards(dataset)[0]
-    local = _download_shard(shard, dataset, shard_cache)
-    ds = load_dataset("parquet", data_files=local, split="train", streaming=True)
-    counts = {}
-    n = 0
-    for row in ds:
-        n += 1
-        for g in _norm_groups(row.get("assigned_groups")):
-            counts[g] = counts.get(g, 0) + 1
-        if n >= max_rows:
-            break
-    print(f"Observed assigned_groups over {n} rows:")
-    for g, c in sorted(counts.items(), key=lambda kv: -kv[1]):
-        print(f"  {g:40s} {c:>8}  ({100*c/max(n,1):5.1f}% of rows)")
-
-
 def main():
-    ap = argparse.ArgumentParser(description="Build the Phase-3 science corpus")
+    ap = argparse.ArgumentParser(description="Build the science corpus")
     ap.add_argument("--dataset", default=DATASET)
     ap.add_argument("--out", default="./data/science1b")
     ap.add_argument("--groups", nargs="*", default=DEFAULT_GROUPS)
@@ -400,6 +220,7 @@ def main():
     args = ap.parse_args()
 
     if args.enumerate_labels:
+        from shards import enumerate_labels
         enumerate_labels(dataset=args.dataset, shard_cache=args.shard_cache)
         return
 
