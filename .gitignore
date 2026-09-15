@@ -12,3 +12,4 @@ __pycache__/
 *.npz
 scratch/
 models
+sft

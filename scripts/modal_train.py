@@ -265,9 +265,9 @@ def generate(
     prompts_file: Optional[str] = None,
     max_new_tokens: int = 80,
     temperature: float = 0.8,
-    top_k: int = 40,
-    top_p: float = 0.9,
-    repetition_penalty: float = 1.1,
+    top_k: int = 100,
+    top_p: float = 0.95,
+    repetition_penalty: float = 1.3,
     memorization_check: bool = True,
     run_name: Optional[str] = None,
 ):
@@ -308,6 +308,7 @@ def generate(
             cache_dir=DATASET_CACHE,
         ).flat_tokens
 
+    responses = []
     for prompt in probe_prompts:
         input_ids = tokenizer.encode(prompt)
         full = generate_text(
@@ -322,12 +323,15 @@ def generate(
             device="cuda",
         )
         print(f"\nPROMPT: {prompt}\n{full}\n{'-'*80}")
+        responses.append({"prompt": prompt, "response": full})
 
         if train_flat is None:
             continue
         new_ids = output_ids_of(prompt, tokenizer, model, max_new_tokens)
         longest = longest_exact_match(new_ids, train_flat)
         print(f"[memorization] longest verbatim span in training data: {longest} tokens")
+
+    return responses
 
 
 def output_ids_of(prompt: str, tokenizer, model, max_new_tokens: int):
