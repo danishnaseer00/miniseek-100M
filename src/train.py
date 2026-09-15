@@ -51,12 +51,6 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class CostLedger:
-    """Cumulative GPU-time/cost accounting persisted next to the JSONL log.
-
-    Lives in <log_dir>/cost_ledger.json so multiple runs (and resumptions on
-    other Modal accounts sharing the volume) accumulate spend against the
-    same budget cap.
-    """
 
     def __init__(self, path: str):
         self.path = path
@@ -199,7 +193,6 @@ class Trainer:
         if resume and os.path.exists(resume):
             self.load_checkpoint(resume)
 
-    # ------------------------------------------------------------------ checkpoint
     def save_checkpoint(
         self,
         path: str,

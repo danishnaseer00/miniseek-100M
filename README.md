@@ -1,8 +1,8 @@
 <div align="center">
 
-# Miniseek
+# Miniseek-100M
 
-**A from-scratch decoder-only language model, trained and measured honestly.**
+**A from-scratch decoder-only language model, trained and measured.**
 
 From a 17.7M-parameter baseline to a 101.4M-parameter model — first on
 WikiText-103 at a fixed token budget, then continued on a self-built ~1B-token
@@ -56,7 +56,10 @@ Scaling the model **5.7×** at a fixed token budget lowered validation loss from
 
 ![Training curves](figures/loss.png)
 
-Regenerate with `python scripts/loss.py` (writes `figures/loss.png`).
+Left panel: Phases 1–2 on WikiText-103. Right panel: Phase-3 continuation on
+the 1B-token science corpus (val measured on the science holdout, so the panels
+are not directly comparable). Regenerate with `python scripts/loss.py` (writes
+`figures/loss.png`).
 *Heads-up: Phase-1 train-loss for epochs 1–4 in the figure is an estimate —
 only the epoch-5 value (3.6944) was logged. All val-loss curves are exact.*
 
@@ -91,10 +94,15 @@ Full samples for all checkpoints are in [`response_lm.txt`](response_lm.txt).
   correctly.
 - **Encyclopedic genre.** The model reproduces WikiText's prose structure,
   including `==== Heading ====` section markup.
-- **Some domain vocabulary.** After the science-corpus pass, prompts like
-  *"DNA is the molecule that carries"*, *"Antibodies are produced by"*, and
-  *"Hemoglobin is the protein that transports"* begin with plausible
-  continuations before drifting.
+- **Some domain vocabulary.** After the science-corpus pass, prompts begin with
+  plausible first-line continuations before drifting into invented detail:
+  - *"DNA is the molecule that carries"* → "carries genes."
+  - *"Antibodies are produced by the immune system to"* → "fight against toxins
+    and diseases."
+  - *"Hemoglobin is the protein that transports"* → "oxygen from your body to the
+    muscles of your feet."
+  - *"Prokaryotic cells differ from eukaryotic cells because"* → "of their
+    inability to replicate."
 - **No verbatim memorization.** A training-data overlap probe (anchor-token
   matching against the training split) finds 0–1 token exact matches — output
   is generated, never regurgitated.
@@ -103,16 +111,38 @@ Full samples for all checkpoints are in [`response_lm.txt`](response_lm.txt).
 
 ### Not learned
 
-- **No reliable factual retrieval.** Knowledge probing (temperature 0.1,
-  top-k 5):
-  - *"The capital of France is"* → "the capital of the Kingdom of France"
-  - *"The Earth revolves around"* → "the city of the city"
-  - *"World War II began in"* → "the late 1950s"
-  - *"Water … boils at"* → "0 degrees altitude"
-  - Score: **0/10**.
-- **No arithmetic.** *"2 + 2 is equal to"* → "the 0.5c4 + 2 −".
-- **No long-range coherence.** Topics drift without warning (Roman Empire → a
-  1980s pop song) even after the 1B-token pass.
+Actual model output on knowledge probes (Phase-2 checkpoint, temperature 0.1,
+top-k 5):
+
+```
+Prompt:  The capital of France is
+Model -> The capital of France is the capital of the Kingdom of France .
+
+Prompt:  The Earth revolves around the
+Model -> The Earth revolves around the city of the city , the city is
+         surrounded by a large area of the city . The city is also home to
+         the city
+
+Prompt:  World War II began in
+Model -> World War II began in the late 1950s . The first major conflict
+         between the United States and the United States was between the
+         United States and the United
+
+Prompt:  Water freezes at 0 degrees Celsius and boils at
+Model -> Water freezes at 0 degrees Celsius and boils at 0 degrees altitude .
+
+Prompt:  Albert Einstein was born in
+Model -> Albert Einstein was born in the city of San Francisco , and was born
+         in the city of San Francisco . The family moved to the city in 1887
+
+Prompt:  2 + 2 is equal to
+Model -> 2 + 2 is equal to the 0.5c4 + 2 −
+```
+
+Score: **0/10** correct. All ten probes fail. The same pattern holds after the
+1B-token science pass — the model picks up domain vocabulary but still cannot
+retrieve facts, and long generations still drift into invented detail
+(e.g. Roman Empire → a 1980s pop song).
 
 ### Why
 
@@ -253,7 +283,6 @@ The `.modalignore` keeps `data/`, `checkpoints/`, `logs/`, `scratch/` and
 Phase 1: Dense baseline (17.7M, WikiText)        ✓ complete (val 3.658)
 Phase 2: Dense control (101.4M, WikiText)        ✓ complete (val 3.169, $17.02)
 Phase 3: 1B science-corpus continuation (101.4M) ✓ complete (val 3.559, $27.98)
-Phase 4: Miniseek 2 (100–150M, 5–10B tokens, Q&A shape in data)
 ```
 
 ## References
